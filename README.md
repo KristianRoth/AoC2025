@@ -13,14 +13,20 @@ These boards run in the game, and in the `vcb` engine of the VirtualCircuitBoard
 
 ## Programs
 
+The rules the puzzles are solved under are in [`RULES.md`](RULES.md).
+
 `days/` holds the assembly programs for the CPU, one folder per day, in the game's assembly language:
 
 | File | Program |
 |---|---|
 | `days/day1/part1.vcbasm` | Advent of Code day 1, part 1 |
 | `days/day1/part2.vcbasm` | Advent of Code day 1, part 2 |
+| `days/day2/part1.vcbasm` | Advent of Code day 2, part 1. The header says where the answer is left |
+| `days/day2/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 1227775554) |
 
 ## Instruction set
+
+What each instruction really does, as found by test programs, is in [`findings/cpu-instructions.md`](findings/cpu-instructions.md).
 
 Each instruction is one 16-bit word; Jump and Call are followed by a 16-bit address word.
 
