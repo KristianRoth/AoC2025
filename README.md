@@ -10,6 +10,8 @@ The CPU's board files for the Steam game Virtual Circuit Board (Update 1.0.1), a
 
 The boards differ only in those 24 latch pixels, in the assembly text they carry, and in the Persistent Memory range.
 
+All three carry the shift fix of 2026-11-17: 50 pixels near x 1120–1129, y 215–224 that bring the instruction's four low bits to the shifter, so `shf | n` shifts A left by n. The fix and how it was found are in [`findings/cpu-instructions.md`](findings/cpu-instructions.md).
+
 These boards run in the game, and in the `vcb` engine of the VirtualCircuitBoardCPU repository, which reproduces the game tick for tick. That engine's fixture `engine/tests/boards/cpu-aoc1p1.vcb` is the autorun board with the program already assembled into its memory by the game; its README explains how to run a program.
 
 ## Programs
