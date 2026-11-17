@@ -31,10 +31,10 @@ All work on the full 32 bits: A = A op B.
 | `sub` | A - B | zero: equal. carry: A >= B (no borrow). nega: A < B when both are below 2^31. |
 | `and`, `or` | bitwise | **All three flags are cleared**, also when the result is 0. |
 | `xor`, `neg` | A becomes 0 | Not working. |
-| `shf` | A unchanged, for every operand value tried | Not working. |
+| `shf` | A unchanged **in the engine**, for all 4,096 encodings of the Op instruction and for shift amounts in B from 0 to 2^32-1 | Open: the owner remembers the shift working in the game (it shifts rgA by the instruction's low bits or by rgB). A test board is with the owner to see which is right. |
 
 - The `_32` symbols (`sum_32` …) set a bit the CPU ignores. `sum` and `sum_32` do the same.
-- There is no multiply, divide or shift, and no add-with-carry.
+- There is no multiply or divide, and no add-with-carry. Whether there is a shift is open (see the table).
 - Adding numbers wider than 32 bits: keep them as 16-bit words, add two words in the 32-bit registers, store the low half, and the carry is what is left in rgAH (`psh rgAH; pop rgB` moves it into B for the next word).
 
 ## Jumps
