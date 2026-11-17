@@ -31,10 +31,10 @@ All work on the full 32 bits: A = A op B.
 | `sub` | A - B | zero: equal. carry: A >= B (no borrow). nega: A < B when both are below 2^31. |
 | `and`, `or` | bitwise | **All three flags are cleared**, also when the result is 0. |
 | `xor`, `neg` | A becomes 0 | Not working. |
-| `shf` | A unchanged **in the engine**, for all 4,096 encodings of the Op instruction and for shift amounts in B from 0 to 2^32-1 | Not working. By design it shifts rgA by the amount in the instruction's four low bits (or in rgB); the owner says a bug in the control logic, not yet pinpointed, keeps it from working. |
+| `shf` | A unchanged, whatever the instruction's low bits or B hold | Not working as built; see "Why the shift does not work". |
 
 - The `_32` symbols (`sum_32` …) set a bit the CPU ignores. `sum` and `sum_32` do the same.
-- There is no multiply or divide, no add-with-carry, and no usable shift until the control-logic bug is found.
+- There is no multiply or divide, no add-with-carry, and no usable shift on the board as built.
 - Adding numbers wider than 32 bits: keep them as 16-bit words, add two words in the 32-bit registers, store the low half, and the carry is what is left in rgAH (`psh rgAH; pop rgB` moves it into B for the next word).
 
 ## Jumps
@@ -50,8 +50,21 @@ All work on the full 32 bits: A = A op B.
 - `call; <address>` and `ret` work and nest.
 - `psh rgSP` pushes the address of the code being executed (the program counter), `psh rgSB` pushed `0xE000` (the stack). Popping into them was not tested.
 
+## Why the shift does not work (2026-11-17)
+Traced in the engine after the owner pointed at the two places.
+
+- The shifter (four stages for 1, 2, 4 and 8 places, around x 790–925, y 306–350) takes its amount from trace colours 0, 1, 2 and 3 of a bus, at (788,347), (788,338), (788,329) and (788,320).
+- That bus runs up to the control logic and ends in the row at y 215, x 1083–1119. Nothing anywhere on it drives colours 0–3, so the amount is always 0 and A passes through unchanged.
+- The instruction's low twelve bits arrive on a second bus (the row at y 224, x 1083–1121, fed from y 305). The six cells between the two rows (x 1087–1121, y 216–223) put instruction bits 11–6 or bits 5–0 onto colours 11–6 of the upper bus, which is how the two register fields of Load and Store share one decoder. Colours 0–3 of the lower bus, the instruction's four low bits, are never passed on to the upper bus.
+
+**A fix that works in the engine** (50 pixels, tried on a copy; the boards in this repository are unchanged):
+- extend the upper bus row (y 215) from x 1120 to 1129 and the lower bus row (y 224) from x 1122 to 1129, in the same bus ink;
+- draw four vertical traces from y 216 to y 223: colour 0 at x 1123, colour 1 at x 1125, colour 2 at x 1127, colour 3 at x 1129 (the same four colours the shifter taps).
+
+With it, `shf | n` shifts A left by n places (n from 0 to 15, all 32 bits, zeros shifted in; `0x1234F0F5` by 4 gives `0x234F0F50`). B plays no part. `sum`, `lia` and the day 1 and day 2 programs run exactly as before, tick for tick.
+
 ## Changes that would help (suggestions only)
-- A working shift (left by one would already give multiply by doubling).
+- The shift fix above (a left shift gives multiply by powers of two and cheap doubling).
 - An add that takes the carry flag in, for numbers wider than 32 bits.
 - Working `xor` and `neg`.
 - `lia`/`lib` that leave the upper half alone, or a way to load a 16-bit immediate.
