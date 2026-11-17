@@ -1,0 +1,352 @@
+# Advent of Code 2025, day 2 part 1 (Gift Shop), with the puzzle's example as input (answer 1227775554)
+#
+# The answer is the sum of every ID in the input ranges that is some digits written twice (55, 6464,
+# 123123). Such an ID with a half of k digits is h * (10^k + 1), so for each range and each k the program
+# walks to the first such number that is not below the range's first ID and adds up the ones in the range.
+#
+# Result, when the CPU stops on the Breakpoint at END:
+#   0x0100-0x0102  the sum as three 16-bit words, low word first
+#   0x0110-0x011E  the sum as 15 decimal digits, one per word, most significant first
+#
+# Input (rule 1 of RULES.md): each range is its first and last ID, each ID three 16-bit words, low word
+# first; three zero words end the list. Built-in limits: IDs of at most 10 digits (k up to 5), a sum
+# below 2^48.
+#
+# A number is three words (16 bits each). The CPU's registers are 32 bits wide, so a word is added in a
+# register and the carry is what ends up in the register's upper half (rgAH).
+# The CPU has no multiply, divide or shift; see findings/cpu-instructions.md.
+
+symbol nop 0b0000_0000_0000_0000
+symbol ld  0b0010_0000_0000_0000
+symbol lia 0b0011_0000_0000_0000
+symbol lib 0b0100_0000_0000_0000
+symbol sto 0b0101_0000_0000_0000
+
+macro  load  { ld  | a? | (b? >> 6) }
+macro  store { sto | a? | (b? >> 6) }
+
+symbol sum    0b0110_0100_0000_0000
+symbol sum_32 0b0110_1100_0000_0000
+symbol sub    0b0110_0010_0000_0000
+symbol sub_32 0b0110_1010_0000_0000
+symbol shf    0b0110_0001_0000_0000
+symbol shf_32 0b0110_1001_0000_0000
+symbol and    0b0110_0000_1000_0000
+symbol and_32 0b0110_1000_1000_0000
+symbol or     0b0110_0000_0100_0000
+symbol or_32  0b0110_1000_0100_0000
+symbol xor    0b0110_0000_0010_0000
+symbol xor_32 0b0110_1000_0010_0000
+symbol neg    0b0110_0000_0001_0000
+symbol neg_32 0b0110_1000_0001_0000
+
+symbol psh 0b1010_0000_0000_0000
+symbol pop 0b1011_0000_0000_0000
+
+symbol jmp  0b1100_0000_0000_0000
+symbol call 0b1110_0000_0000_0000
+symbol ret  0b1111_0000_0000_0000
+
+symbol rgAH 0b1000_0000_0000
+symbol rgA  0b0100_0000_0000
+symbol rgBH 0b0010_0000_0000
+symbol rgB  0b0001_0000_0000
+symbol rgSP 0b0000_1000_0000
+symbol rgSB 0b0000_0100_0000
+symbol non  0
+
+symbol zero  0b1000_0000_0000 
+symbol carry 0b0100_0000_0000
+symbol nega  0b0010_0000_0000
+symbol eq    0b0001_0000_0000
+symbol neq   0b0000_1000_0000
+
+# ---- Variables (all below 0x1000, so lia/lib can address them) ----
+# The result
+pointer SUM_0 0x0100 0
+pointer SUM_1 0x0101 0
+pointer SUM_2 0x0102 0
+# The current range: its first and last ID. HI must follow LO.
+pointer LO_0 0x0120 0
+pointer LO_1 0x0121 0
+pointer LO_2 0x0122 0
+pointer HI_0 0x0123 0
+pointer HI_1 0x0124 0
+pointer HI_2 0x0125 0
+# The current half length k: NEXT is where the next k starts in the table, C the candidate ID,
+# LAST the largest candidate for this k. C and LAST must follow NEXT.
+pointer NEXT 0x0130 0
+pointer C_0 0x0131 0
+pointer C_1 0x0132 0
+pointer C_2 0x0133 0
+pointer LAST_0 0x0134 0
+pointer LAST_1 0x0135 0
+pointer LAST_2 0x0136 0
+# S is the current step, T a trial value, COUNT how often STEP_UP stepped
+pointer S_0 0x0140 0
+pointer S_1 0x0141 0
+pointer S_2 0x0142 0
+pointer T_0 0x0143 0
+pointer T_1 0x0144 0
+pointer T_2 0x0145 0
+pointer COUNT 0x0146 0
+# The constant 1 as a number
+pointer ONE_0 0x0150 1
+pointer ONE_1 0x0151 0
+pointer ONE_2 0x0152 0
+# Pointers: SRC and DST for COPY_1, IN the next input word, DIGIT the next digit to write,
+# and the addresses of the two tables
+pointer SRC 0x0160 0
+pointer DST 0x0161 0
+pointer IN 0x0162 0x2000
+pointer DIGIT 0x0163 0x0110
+pointer K_TABLE 0x0164 0x3000
+pointer POWERS 0x0165 0x3100
+
+# ---- The CPU starts at 0xFF00 ----
+origin 0xFF00
+jmp; MAIN
+
+origin 0x1000
+@ MAIN
+# Read the next range into LO and HI
+@ NEXT_RANGE
+	lia IN; load rgA rgA; lib SRC; store rgA rgB
+	lia LO_0; lib DST; store rgA rgB
+	call; COPY_3
+	call; COPY_3
+	lia SRC; load rgA rgA; lib IN; store rgA rgB
+	# A first ID of 0 ends the list
+	lia LO_0; load rgA rgA; lib LO_1; load rgB rgB; or; lib LO_2; load rgB rgB; or; lib 0
+	jmp eq; ALL_RANGES_DONE
+	lia K_TABLE; load rgA rgA; lib SRC; store rgA rgB
+
+# Read the next k from the table: NEXT, C = its smallest candidate, LAST = its largest
+@ NEXT_K
+	lia NEXT; lib DST; store rgA rgB
+	call; COPY_1
+	call; COPY_3
+	call; COPY_3
+	lia NEXT; load rgA rgA; lib 0
+	jmp eq; NEXT_RANGE
+	# No candidate of this k is in the range when even the largest is below LO
+	# compare LAST with LO: nega if LAST < LO, zero if equal
+	lia LAST_2; load rgA rgA; lib LO_2; load rgB rgB; jmp neq; CMP_1
+	lia LAST_1; load rgA rgA; lib LO_1; load rgB rgB; jmp neq; CMP_1
+	lia LAST_0; load rgA rgA; lib LO_0; load rgB rgB
+@ CMP_1
+	sub
+	jmp nega; SKIP_K
+
+# Walk C up to the largest candidate below LO, in steps of (10^k + 1) * 10^j, largest step first.
+# The steps are the rest of this k's table entry.
+@ NEXT_STEP
+	lia SRC; load rgA rgA; lib NEXT; load rgB rgB
+	jmp eq; STEPS_DONE
+	lia S_0; lib DST; store rgA rgB
+	call; COPY_3
+	call; STEP_UP
+	jmp; NEXT_STEP
+
+# S is now 10^k + 1. If C is still below LO, the next candidate is the first one in the range.
+@ STEPS_DONE
+	# compare C with LO: nega if C < LO, zero if equal
+	lia C_2; load rgA rgA; lib LO_2; load rgB rgB; jmp neq; CMP_2
+	lia C_1; load rgA rgA; lib LO_1; load rgB rgB; jmp neq; CMP_2
+	lia C_0; load rgA rgA; lib LO_0; load rgB rgB
+@ CMP_2
+	sub
+	jmp nega; ONE_MORE
+	jmp; ADD_CANDIDATES
+@ ONE_MORE
+	# C = C + S
+	lia C_0; load rgA rgA; lib S_0; load rgB rgB; sum; lib C_0; store rgA rgB
+	psh rgAH; pop rgB; lia C_1; load rgA rgA; sum; lib S_1; load rgB rgB; sum; lib C_1; store rgA rgB
+	psh rgAH; pop rgB; lia C_2; load rgA rgA; sum; lib S_2; load rgB rgB; sum; lib C_2; store rgA rgB
+
+# Add every candidate up to HI (and up to LAST) to the sum
+@ ADD_CANDIDATES
+	# compare HI with C: nega if HI < C, zero if equal
+	lia HI_2; load rgA rgA; lib C_2; load rgB rgB; jmp neq; CMP_3
+	lia HI_1; load rgA rgA; lib C_1; load rgB rgB; jmp neq; CMP_3
+	lia HI_0; load rgA rgA; lib C_0; load rgB rgB
+@ CMP_3
+	sub
+	jmp nega; NEXT_K
+	# compare LAST with C: nega if LAST < C, zero if equal
+	lia LAST_2; load rgA rgA; lib C_2; load rgB rgB; jmp neq; CMP_4
+	lia LAST_1; load rgA rgA; lib C_1; load rgB rgB; jmp neq; CMP_4
+	lia LAST_0; load rgA rgA; lib C_0; load rgB rgB
+@ CMP_4
+	sub
+	jmp nega; NEXT_K
+	# SUM = SUM + C
+	lia SUM_0; load rgA rgA; lib C_0; load rgB rgB; sum; lib SUM_0; store rgA rgB
+	psh rgAH; pop rgB; lia SUM_1; load rgA rgA; sum; lib C_1; load rgB rgB; sum; lib SUM_1; store rgA rgB
+	psh rgAH; pop rgB; lia SUM_2; load rgA rgA; sum; lib C_2; load rgB rgB; sum; lib SUM_2; store rgA rgB
+	# C = C + S
+	lia C_0; load rgA rgA; lib S_0; load rgB rgB; sum; lib C_0; store rgA rgB
+	psh rgAH; pop rgB; lia C_1; load rgA rgA; sum; lib S_1; load rgB rgB; sum; lib C_1; store rgA rgB
+	psh rgAH; pop rgB; lia C_2; load rgA rgA; sum; lib S_2; load rgB rgB; sum; lib C_2; store rgA rgB
+	jmp; ADD_CANDIDATES
+
+@ SKIP_K
+	lia NEXT; load rgA rgA; lib SRC; store rgA rgB
+	jmp; NEXT_K
+
+# Write the sum as decimal digits: count how often each power of ten fits, largest power first.
+# This is the same walk as above, from C = 0 towards LO = SUM + 1.
+@ ALL_RANGES_DONE
+	# LO = SUM + ONE
+	lia SUM_0; load rgA rgA; lib ONE_0; load rgB rgB; sum; lib LO_0; store rgA rgB
+	psh rgAH; pop rgB; lia SUM_1; load rgA rgA; sum; lib ONE_1; load rgB rgB; sum; lib LO_1; store rgA rgB
+	psh rgAH; pop rgB; lia SUM_2; load rgA rgA; sum; lib ONE_2; load rgB rgB; sum; lib LO_2; store rgA rgB
+	lia 0; lib C_0; store rgA rgB; lib C_1; store rgA rgB; lib C_2; store rgA rgB
+	lia POWERS; load rgA rgA; lib SRC; store rgA rgB
+@ NEXT_DIGIT
+	lia S_0; lib DST; store rgA rgB
+	call; COPY_3
+	# A power of 0 ends the table
+	lia S_0; load rgA rgA; lib S_1; load rgB rgB; or; lib S_2; load rgB rgB; or; lib 0
+	jmp eq; END
+	call; STEP_UP
+	lia COUNT; load rgA rgA; lib DIGIT; load rgB rgB; store rgA rgB
+	lia DIGIT; load rgA rgA; lib 1; sum; lib DIGIT; store rgA rgB
+	jmp; NEXT_DIGIT
+
+@ END
+	non
+
+# ---- Subroutines ----
+origin 0x1800
+# STEP_UP: add S to C as often as the result stays below LO. COUNT is the number of steps.
+@ STEP_UP
+	lia 0; lib COUNT; store rgA rgB
+@ STEP_UP_AGAIN
+	# T = C + S
+	lia C_0; load rgA rgA; lib S_0; load rgB rgB; sum; lib T_0; store rgA rgB
+	psh rgAH; pop rgB; lia C_1; load rgA rgA; sum; lib S_1; load rgB rgB; sum; lib T_1; store rgA rgB
+	psh rgAH; pop rgB; lia C_2; load rgA rgA; sum; lib S_2; load rgB rgB; sum; lib T_2; store rgA rgB
+	# compare T with LO: nega if T < LO, zero if equal
+	lia T_2; load rgA rgA; lib LO_2; load rgB rgB; jmp neq; CMP_5
+	lia T_1; load rgA rgA; lib LO_1; load rgB rgB; jmp neq; CMP_5
+	lia T_0; load rgA rgA; lib LO_0; load rgB rgB
+@ CMP_5
+	sub
+	jmp nega; STEP_UP_TAKE
+	ret
+@ STEP_UP_TAKE
+	lia T_0; load rgA rgA; lib C_0; store rgA rgB; lia T_1; load rgA rgA; lib C_1; store rgA rgB; lia T_2; load rgA rgA; lib C_2; store rgA rgB
+	lia COUNT; load rgA rgA; lib 1; sum; lib COUNT; store rgA rgB
+	jmp; STEP_UP_AGAIN
+
+# COPY_3: copy three words from the address in SRC to the address in DST; both move on by three.
+@ COPY_3
+	call; COPY_1
+	call; COPY_1
+	call; COPY_1
+	ret
+
+# COPY_1: copy one word from the address in SRC to the address in DST; both move on by one.
+@ COPY_1
+	lib SRC; load rgB rgB; load rgA rgB; lib DST; load rgB rgB; store rgA rgB
+	lia SRC; load rgA rgA; lib 1; sum; lib SRC; store rgA rgB
+	lia DST; load rgA rgA; lib 1; sum; lib DST; store rgA rgB
+	ret
+
+# ---- The table of half lengths k = 1..5 ----
+# Per k: the address of the next entry; the smallest candidate 10^(k-1) * (10^k + 1); the largest,
+# 10^(2k) - 1; then the steps (10^k + 1) * 10^j for j = k-1 down to 0. An entry with address 0 ends it.
+origin 0x3000
+# k = 1: candidates 11 to 99, step 11
+0x300A
+0x000B; 0x0000; 0x0000
+0x0063; 0x0000; 0x0000
+0x000B; 0x0000; 0x0000
+# k = 2: candidates 1010 to 9999, step 101
+0x3017
+0x03F2; 0x0000; 0x0000
+0x270F; 0x0000; 0x0000
+0x03F2; 0x0000; 0x0000
+0x0065; 0x0000; 0x0000
+# k = 3: candidates 100100 to 999999, step 1001
+0x3027
+0x8704; 0x0001; 0x0000
+0x423F; 0x000F; 0x0000
+0x8704; 0x0001; 0x0000
+0x271A; 0x0000; 0x0000
+0x03E9; 0x0000; 0x0000
+# k = 4: candidates 10001000 to 99999999, step 10001
+0x303A
+0x9A68; 0x0098; 0x0000
+0xE0FF; 0x05F5; 0x0000
+0x9A68; 0x0098; 0x0000
+0x42A4; 0x000F; 0x0000
+0x86AA; 0x0001; 0x0000
+0x2711; 0x0000; 0x0000
+# k = 5: candidates 1000010000 to 9999999999, step 100001
+0x3050
+0xF110; 0x3B9A; 0x0000
+0xE3FF; 0x540B; 0x0002
+0xF110; 0x3B9A; 0x0000
+0xE4E8; 0x05F5; 0x0000
+0x96E4; 0x0098; 0x0000
+0x424A; 0x000F; 0x0000
+0x86A1; 0x0001; 0x0000
+0; 0; 0; 0; 0; 0; 0
+
+# ---- Powers of ten, 10^14 down to 1, then 0 ----
+origin 0x3100
+0x4000; 0x107A; 0x5AF3
+0xA000; 0x4E72; 0x0918
+0x1000; 0xD4A5; 0x00E8
+0xE800; 0x4876; 0x0017
+0xE400; 0x540B; 0x0002
+0xCA00; 0x3B9A; 0x0000
+0xE100; 0x05F5; 0x0000
+0x9680; 0x0098; 0x0000
+0x4240; 0x000F; 0x0000
+0x86A0; 0x0001; 0x0000
+0x2710; 0x0000; 0x0000
+0x03E8; 0x0000; 0x0000
+0x0064; 0x0000; 0x0000
+0x000A; 0x0000; 0x0000
+0x0001; 0x0000; 0x0000
+0; 0; 0
+
+# ---- The input: 11 ranges ----
+origin 0x2000
+# 11-22
+0x000B; 0x0000; 0x0000
+0x0016; 0x0000; 0x0000
+# 95-115
+0x005F; 0x0000; 0x0000
+0x0073; 0x0000; 0x0000
+# 998-1012
+0x03E6; 0x0000; 0x0000
+0x03F4; 0x0000; 0x0000
+# 1188511880-1188511890
+0x4088; 0x46D7; 0x0000
+0x4092; 0x46D7; 0x0000
+# 222220-222224
+0x640C; 0x0003; 0x0000
+0x6410; 0x0003; 0x0000
+# 1698522-1698528
+0xEADA; 0x0019; 0x0000
+0xEAE0; 0x0019; 0x0000
+# 446443-446449
+0xCFEB; 0x0006; 0x0000
+0xCFF1; 0x0006; 0x0000
+# 38593856-38593862
+0xE540; 0x024C; 0x0000
+0xE546; 0x024C; 0x0000
+# 565653-565659
+0xA195; 0x0008; 0x0000
+0xA19B; 0x0008; 0x0000
+# 824824821-824824827
+0xD3F5; 0x3129; 0x0000
+0xD3FB; 0x3129; 0x0000
+# 2121212118-2121212124
+0x20D6; 0x7E6F; 0x0000
+0x20DC; 0x7E6F; 0x0000
+0; 0; 0; 0; 0; 0
