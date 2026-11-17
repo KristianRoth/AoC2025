@@ -7,10 +7,11 @@ The CPU's board files for the Steam game Virtual Circuit Board (Update 1.0.1), a
 | `cpu-32bit-manual-start.vcb` | The CPU as built. Its run switch (a 5×5 latch block near x 1100, y 249) is Latch Off, so it starts when the latch is clicked in the game. Formerly `32-bit-alu-try.vcb`. |
 | `cpu-32bit-autorun-aoc1p1.vcb` | The same CPU with the run switch drawn as Latch On, so it runs by itself from the first tick. Its assembly is `days/day1/part1.vcbasm` (Advent of Code day 1, part 1), and the program ends on a Breakpoint. Formerly `CPU.vcb`. |
 | `days/day2/cpu-32bit-autorun-aoc2p1.vcb` | The autorun CPU with `days/day2/part1.vcbasm` as its assembly, for checking day 2 part 1 in the game. Persistent Memory is set to `0x0100`–`0x011E`, where the answer is left. |
+| `days/day2/cpu-32bit-autorun-aoc2p2.vcb` | The same for `days/day2/part2.vcbasm`. |
 
 The boards differ only in those 24 latch pixels, in the assembly text they carry, and in the Persistent Memory range.
 
-All three carry the shift fix of 2026-11-17: 50 pixels near x 1120–1129, y 215–224 that bring the instruction's four low bits to the shifter, so `shf | n` shifts A left by n. The fix and how it was found are in [`findings/cpu-instructions.md`](findings/cpu-instructions.md).
+All four carry the shift fix of 2026-11-17: 50 pixels near x 1120–1129, y 215–224 that bring the instruction's four low bits to the shifter, so `shf | n` shifts A left by n. The fix and how it was found are in [`findings/cpu-instructions.md`](findings/cpu-instructions.md).
 
 These boards run in the game, and in the `vcb` engine of the VirtualCircuitBoardCPU repository, which reproduces the game tick for tick. That engine's fixture `engine/tests/boards/cpu-aoc1p1.vcb` is the autorun board with the program already assembled into its memory by the game; its README explains how to run a program.
 
@@ -26,6 +27,8 @@ The rules the puzzles are solved under are in [`RULES.md`](RULES.md).
 | `days/day1/part2.vcbasm` | Advent of Code day 1, part 2 |
 | `days/day2/part1.vcbasm` | Advent of Code day 2, part 1. The header says where the answer is left |
 | `days/day2/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 1227775554) |
+| `days/day2/part2.vcbasm` | Advent of Code day 2, part 2. The header says where the answer is left |
+| `days/day2/part2-example.vcbasm` | The same program with the puzzle's example as input (answer 4174379265) |
 
 ## Instruction set
 
