@@ -68,7 +68,7 @@ The same fault as the shift, one step further along. `xor` is selected by bit 5 
 
 **The fix** (24 pixels, drawn into all four CPU boards on 2026-11-18 at the owner's request; checked in the engine, not yet run in the game): both bus rows are extended to x 1133, and two more vertical traces run from y 216 to y 223, colour 4 at x 1131 and colour 5 at x 1133.
 
-With it, `xor` gives A xor B and `neg` gives NOT A. `sum`, `sub`, `and`, `or`, `shf`, `lia`, `lib` and the day 1 and day 2 programs behave exactly as before, tick for tick. Both fixes were found before `xor` and `neg` only existed on paper: before 2026-11-18 they set A to 0.
+With it, `xor` gives A xor B and `neg` gives NOT A. `sum`, `sub`, `and`, `or`, `shf`, `lia`, `lib` and the day 1 and day 2 programs behave exactly as before, tick for tick. Before the fix both instructions set A to 0.
 
 ## Changes that would help (suggestions only)
 - A right shift.
