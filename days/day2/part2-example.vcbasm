@@ -1,28 +1,82 @@
 # Advent of Code 2025, day 2 part 2 (Gift Shop), with the puzzle's example as input (answer 4174379265)
 #
-# The answer is the sum of every ID in the input ranges that is some digits repeated at least twice
-# (12341234, 123123123, 1111111). An ID of n digits made of a block of k digits is h * M, where
-# M = (10^n - 1) / (10^k - 1), for example 1001001 for n = 9, k = 3. A family is one pair (n, k). For
-# each range and each family the program walks to the first such number that is not below the range's
-# first ID and adds up the ones in the range.
+# THE PUZZLE
+# The input is a list of ID ranges. In part 2 an ID is invalid when it is some digits repeated at least
+# twice: 12341234 (1234 two times), 123123123 (123 three times), 1111111 (1 seven times). The answer is
+# the sum of all invalid IDs inside the ranges.
 #
-# Some IDs are in two families: 222222 is 222 twice and 22 three times. So for 6 and for 10 digits the
-# family of the single repeated digit (k = 1) is subtracted once. Those sums go to NEG, and at the end
-# SUM = SUM - NEG.
+# THE IDEA
+# An invalid ID of n digits made of a block of k digits is  h * M  with h a k-digit number, where M is a 1
+# every k digits:
+#     12341234  = 1234 * 10001       (n = 8, k = 4)
+#     123123123 = 123 * 1001001      (n = 9, k = 3)
+#     M = (10^n - 1) / (10^k - 1)
+# A FAMILY is one pair (n, k). Inside a family the invalid IDs are evenly spaced, M apart:
+#     n = 6, k = 2:   101010, 111111, 121212, ..., 999999      step 10101
+# The program never looks at an ID that is not invalid. For each range and each family it jumps to the
+# first candidate that is not below the range's first ID, then adds them up one step at a time until it
+# passes the range's last ID.
 #
-# Result, when the CPU stops on the Breakpoint at END:
+# COUNTED TWICE
+# Some IDs are in two families: 222222 is 222 two times and also 22 three times. Up to 10 digits that
+# only happens for 6 and for 10 digits, and the IDs in question are exactly those of one repeated digit
+# (111111, 222222, ...). So the table has a family for k = 1 at 6 and at 10 digits whose SIGN is 1: its
+# IDs are added to NEG instead of SUM, and at the end SUM = SUM - NEG.
+#     6 digits:   + (k = 3)  + (k = 2)  - (k = 1)
+#     10 digits:  + (k = 5)  + (k = 2)  - (k = 1)
+# For 2, 3, 5 and 7 digits the only block length is 1; for 4, 8 and 9 digits the families with a shorter
+# block lie inside the one with the longest block, so only that one is in the table.
+#
+# THE WHOLE PROGRAM IN PSEUDO CODE
+#     SUM = 0; NEG = 0
+#     for each range LO..HI in the input:
+#         for each family in K_TABLE:               # 13 families, 2 to 10 digits
+#             C = smallest candidate of the family  # 10^(k-1) * M
+#             LAST = largest candidate              # 10^n - 1
+#             if LAST < LO: continue                # the range lies above the whole family
+#             for S in M*10^(k-1), ..., M*10, M:    # big steps first
+#                 while C + S < LO: C = C + S       # STEP_UP: at most 9 times per step size
+#             # now C is the largest candidate below LO (or the smallest candidate, if that is not below LO)
+#             if C < LO: C = C + S                  # S is M here: the first candidate in the range
+#             while C <= HI and C <= LAST:
+#                 if SIGN == 0: SUM = SUM + C
+#                 else:         NEG = NEG + C
+#                 C = C + S
+#     SUM = SUM - NEG
+#     write SUM as decimal digits                   # with the same STEP_UP, see ALL_RANGES_DONE
+#     stop
+#
+# The CPU cannot multiply or divide, so the candidates and step sizes of every family are in a table at
+# 0x3000 (K_TABLE), and "jump to the first candidate" is done by walking up in decimal steps.
+#
+# THE RESULT, when the CPU stops on the Breakpoint at END
 #   0x0100-0x0102  the sum as three 16-bit words, low word first
 #   0x0110-0x011E  the sum as 15 decimal digits, one per word, most significant first
 #   (0x0104-0x0106 holds NEG, the part that was subtracted)
 #
-# Input (rule 1 of RULES.md): each range is its first and last ID, each ID three 16-bit words, low word
-# first; three zero words end the list. Built-in limits: IDs of at most 10 digits, a sum
-# below 2^48.
+# THE INPUT (rule 1 of RULES.md), at 0x2000
+# Each range is its first and last ID. Each ID is three 16-bit words, low word first. Three zero words
+# end the list. Built-in limits: IDs of at most 10 digits, a sum below 2^48.
 #
-# A number is three words (16 bits each). The CPU's registers are 32 bits wide, so a word is added in a
-# register and the carry is what ends up in the register's upper half (rgAH).
-# The CPU has no multiply, divide or shift; see findings/cpu-instructions.md.
+# NUMBERS WIDER THAN A REGISTER
+# IDs go up to 9,999,999,999, which needs 34 bits; the sum needs more. A number is therefore three
+# memory words of 16 bits: NAME_0 (lowest), NAME_1, NAME_2. The CPU's registers are 32 bits wide, so two
+# words can be added in a register without losing the carry: the carry ends up in the upper half, rgAH.
+#
+# THE FOUR IDIOMS used everywhere below (v is a variable's address, below 0x1000)
+#     lia v; load rgA rgA      A = the word at v, upper half 0   (lia puts the address in A, load replaces it)
+#     lib v; load rgB rgB      B = the word at v, upper half 0
+#     lib v; store rgA rgB     the word at v = the lower half of A   (this uses up B)
+#     psh rgAH; pop rgB        B = the upper half of A: the carry of the addition just made
+# What each instruction does exactly is in findings/cpu-instructions.md.
+#
+# MEMORY MAP
+#   0x0100-0x0165  variables            0x2000-  the input
+#   0x1000-        the main program     0x3000-  K_TABLE: candidates and steps per family
+#   0x1800-        subroutines          0x3100-  POWERS: powers of ten for the decimal digits
+#   0xFF00         where the CPU starts
 
+# ---- The CPU's instructions as symbols (the same table as in day 1) ----
 symbol nop 0b0000_0000_0000_0000
 symbol ld  0b0010_0000_0000_0000
 symbol lia 0b0011_0000_0000_0000
@@ -121,152 +175,197 @@ jmp; MAIN
 
 origin 0x1000
 @ MAIN
-# Read the next range into LO and HI
+# ==== for each range LO..HI in the input ====
+#     LO = input[IN], HI = input[IN + 3]; IN = IN + 6
+#     if LO == 0: goto ALL_RANGES_DONE
+#     SRC = K_TABLE                      # start again at the first family
+# COPY_3 copies three words from the address in SRC to the address in DST and moves both on, so two
+# calls fill LO and then HI, which lies right behind LO.
 @ NEXT_RANGE
-	lia IN; load rgA rgA; lib SRC; store rgA rgB
-	lia LO_0; lib DST; store rgA rgB
-	call; COPY_3
-	call; COPY_3
-	lia SRC; load rgA rgA; lib IN; store rgA rgB
-	# A first ID of 0 ends the list
+	lia IN; load rgA rgA; lib SRC; store rgA rgB                                         # SRC = IN
+	lia LO_0; lib DST; store rgA rgB                                                     # DST = the address of LO
+	call; COPY_3                                                                         # LO = the range's first ID
+	call; COPY_3                                                                         # HI = the range's last ID
+	lia SRC; load rgA rgA; lib IN; store rgA rgB                                         # IN = SRC, now at the next range
+	# A first ID of 0 ends the list: OR the three words of LO together and compare with 0.
+	# (eq compares A with B as they are now, so no subtraction is needed.)
 	lia LO_0; load rgA rgA; lib LO_1; load rgB rgB; or; lib LO_2; load rgB rgB; or; lib 0
 	jmp eq; ALL_RANGES_DONE
-	lia K_TABLE; load rgA rgA; lib SRC; store rgA rgB
+	lia K_TABLE; load rgA rgA; lib SRC; store rgA rgB                                    # SRC = the start of the table: the first family
 
-# Read the next family from the table: NEXT, SIGN, C = its smallest candidate, LAST = its largest
+# ==== for each family in the table ====
+# SRC points at the family's table entry: [address of the next entry] [SIGN] [smallest candidate]
+# [largest candidate] [step sizes, largest first]. NEXT, SIGN, C and LAST lie behind each other, so
+# four copies fill them.
+#     NEXT = table[SRC]; SIGN; C = smallest candidate; LAST = largest candidate
+#     if NEXT == 0: goto NEXT_RANGE      # the table is finished: all families done for this range
+#     if LAST < LO: goto SKIP_K          # every candidate of this family is below the range
 @ NEXT_K
-	lia NEXT; lib DST; store rgA rgB
-	call; COPY_1
-	call; COPY_1
-	call; COPY_3
-	call; COPY_3
-	lia NEXT; load rgA rgA; lib 0
+	lia NEXT; lib DST; store rgA rgB                                                     # DST = the address of NEXT
+	call; COPY_1                                                                         # NEXT = where the next family's entry starts
+	call; COPY_1                                                                         # SIGN = 0 to add this family, 1 to subtract it
+	call; COPY_3                                                                         # C = the smallest candidate of this family
+	call; COPY_3                                                                         # LAST = the largest candidate of this family
+	lia NEXT; load rgA rgA; lib 0                                                        # NEXT == 0 marks the end of the table
 	jmp eq; NEXT_RANGE
 	# No candidate of this family is in the range when even the largest is below LO
-	# compare LAST with LO: nega if LAST < LO, zero if equal
-	lia LAST_2; load rgA rgA; lib LO_2; load rgB rgB; jmp neq; CMP_1
-	lia LAST_1; load rgA rgA; lib LO_1; load rgB rgB; jmp neq; CMP_1
-	lia LAST_0; load rgA rgA; lib LO_0; load rgB rgB
+	# compare LAST with LO, highest word first; afterwards: nega if LAST < LO, zero if equal
+	lia LAST_2; load rgA rgA; lib LO_2; load rgB rgB; jmp neq; CMP_1                     # word 2 differs: it decides
+	lia LAST_1; load rgA rgA; lib LO_1; load rgB rgB; jmp neq; CMP_1                     # word 1 differs: it decides
+	lia LAST_0; load rgA rgA; lib LO_0; load rgB rgB                                     # otherwise word 0 decides
 @ CMP_1
-	sub
+	sub                                                                                  # A - B sets the flags zero and nega
 	jmp nega; SKIP_K
 
-# Walk C up to the largest candidate below LO, in steps of M * 10^j, largest step first.
-# The steps are the rest of this family's table entry.
+# ==== walk C up to the largest candidate below LO ====
+#     while SRC != NEXT:                 # the step sizes are the rest of this family's entry
+#         S = table[SRC]; SRC = SRC + 3
+#         STEP_UP                        # while C + S < LO: C = C + S
+# Example, 4 digits (M = 101) and LO = 3308: C starts at 1010. Step 1010: 2020, 3030 (4040 is too far).
+# Step 101: 3131, 3232 (3333 is too far). C = 3232 is the largest candidate below 3308.
+# This is long division done by walking: it finds h in  h * M  one decimal digit at a time.
 @ NEXT_STEP
-	lia SRC; load rgA rgA; lib NEXT; load rgB rgB
-	jmp eq; STEPS_DONE
-	lia S_0; lib DST; store rgA rgB
-	call; COPY_3
-	call; STEP_UP
+	lia SRC; load rgA rgA; lib NEXT; load rgB rgB                                        # A = SRC, B = NEXT
+	jmp eq; STEPS_DONE                                                                   # SRC reached the next entry: no step sizes left
+	lia S_0; lib DST; store rgA rgB                                                      # DST = the address of S
+	call; COPY_3                                                                         # S = the next step size
+	call; STEP_UP                                                                        # while C + S < LO: C = C + S
 	jmp; NEXT_STEP
 
-# S is now M. If C is still below LO, the next candidate is the first one in the range.
+# ==== step onto the first candidate that is not below LO ====
+# S is now the smallest step, M: the distance between two candidates.
+#     if C < LO: C = C + S
+# (C is not below LO only when even the family's smallest candidate is at or above LO.)
 @ STEPS_DONE
-	# compare C with LO: nega if C < LO, zero if equal
-	lia C_2; load rgA rgA; lib LO_2; load rgB rgB; jmp neq; CMP_2
-	lia C_1; load rgA rgA; lib LO_1; load rgB rgB; jmp neq; CMP_2
-	lia C_0; load rgA rgA; lib LO_0; load rgB rgB
+	# compare C with LO, highest word first; afterwards: nega if C < LO, zero if equal
+	lia C_2; load rgA rgA; lib LO_2; load rgB rgB; jmp neq; CMP_2                        # word 2 differs: it decides
+	lia C_1; load rgA rgA; lib LO_1; load rgB rgB; jmp neq; CMP_2                        # word 1 differs: it decides
+	lia C_0; load rgA rgA; lib LO_0; load rgB rgB                                        # otherwise word 0 decides
 @ CMP_2
-	sub
-	jmp nega; ONE_MORE
-	jmp; ADD_CANDIDATES
+	sub                                                                                  # A - B sets the flags zero and nega
+	jmp nega; ONE_MORE                                                                   # C < LO: one more step
+	jmp; ADD_CANDIDATES                                                                  # C is already at or above LO
 @ ONE_MORE
-	# C = C + S
-	lia C_0; load rgA rgA; lib S_0; load rgB rgB; sum; lib C_0; store rgA rgB
-	psh rgAH; pop rgB; lia C_1; load rgA rgA; sum; lib S_1; load rgB rgB; sum; lib C_1; store rgA rgB
-	psh rgAH; pop rgB; lia C_2; load rgA rgA; sum; lib S_2; load rgB rgB; sum; lib C_2; store rgA rgB
+	# C = C + S      (three words, lowest first; the carry travels in rgAH)
+	lia C_0; load rgA rgA; lib S_0; load rgB rgB; sum; lib C_0; store rgA rgB            # word 0: A = C_0 + S_0
+	psh rgAH; pop rgB; lia C_1; load rgA rgA; sum; lib S_1; load rgB rgB; sum; lib C_1; store rgA rgB  # word 1: A = carry + C_1 + S_1
+	psh rgAH; pop rgB; lia C_2; load rgA rgA; sum; lib S_2; load rgB rgB; sum; lib C_2; store rgA rgB  # word 2: A = carry + C_2 + S_2
 
-# Add every candidate up to HI (and up to LAST) to SUM, or to NEG when SIGN is 1
+# ==== add up the candidates inside the range ====
+#     while C <= HI and C <= LAST:
+#         if SIGN == 0: SUM = SUM + C    # ADD_TO_SUM
+#         else:         NEG = NEG + C    # a family that only exists to undo double counting
+#         C = C + S                      # STEP_ON
+# The tests are written the other way round: leave when HI < C, leave when LAST < C.
+# Leaving goes to NEXT_K; SRC already points at the next family's entry.
 @ ADD_CANDIDATES
-	# compare HI with C: nega if HI < C, zero if equal
-	lia HI_2; load rgA rgA; lib C_2; load rgB rgB; jmp neq; CMP_3
-	lia HI_1; load rgA rgA; lib C_1; load rgB rgB; jmp neq; CMP_3
-	lia HI_0; load rgA rgA; lib C_0; load rgB rgB
+	# compare HI with C, highest word first; afterwards: nega if HI < C, zero if equal
+	lia HI_2; load rgA rgA; lib C_2; load rgB rgB; jmp neq; CMP_3                        # word 2 differs: it decides
+	lia HI_1; load rgA rgA; lib C_1; load rgB rgB; jmp neq; CMP_3                        # word 1 differs: it decides
+	lia HI_0; load rgA rgA; lib C_0; load rgB rgB                                        # otherwise word 0 decides
 @ CMP_3
-	sub
-	jmp nega; NEXT_K
-	# compare LAST with C: nega if LAST < C, zero if equal
-	lia LAST_2; load rgA rgA; lib C_2; load rgB rgB; jmp neq; CMP_4
-	lia LAST_1; load rgA rgA; lib C_1; load rgB rgB; jmp neq; CMP_4
-	lia LAST_0; load rgA rgA; lib C_0; load rgB rgB
+	sub                                                                                  # A - B sets the flags zero and nega
+	jmp nega; NEXT_K                                                                     # HI < C: past the end of the range
+	# compare LAST with C, highest word first; afterwards: nega if LAST < C, zero if equal
+	lia LAST_2; load rgA rgA; lib C_2; load rgB rgB; jmp neq; CMP_4                      # word 2 differs: it decides
+	lia LAST_1; load rgA rgA; lib C_1; load rgB rgB; jmp neq; CMP_4                      # word 1 differs: it decides
+	lia LAST_0; load rgA rgA; lib C_0; load rgB rgB                                      # otherwise word 0 decides
 @ CMP_4
-	sub
-	jmp nega; NEXT_K
-	lia SIGN; load rgA rgA; lib 0
-	jmp eq; ADD_TO_SUM
-	# NEG = NEG + C
-	lia NEG_0; load rgA rgA; lib C_0; load rgB rgB; sum; lib NEG_0; store rgA rgB
-	psh rgAH; pop rgB; lia NEG_1; load rgA rgA; sum; lib C_1; load rgB rgB; sum; lib NEG_1; store rgA rgB
-	psh rgAH; pop rgB; lia NEG_2; load rgA rgA; sum; lib C_2; load rgB rgB; sum; lib NEG_2; store rgA rgB
-	jmp; STEP_ON
+	sub                                                                                  # A - B sets the flags zero and nega
+	jmp nega; NEXT_K                                                                     # LAST < C: past the family's largest candidate
+	lia SIGN; load rgA rgA; lib 0                                                        # A = SIGN, B = 0
+	jmp eq; ADD_TO_SUM                                                                   # SIGN == 0: this family is added
+	# NEG = NEG + C      (three words, lowest first; the carry travels in rgAH)
+	lia NEG_0; load rgA rgA; lib C_0; load rgB rgB; sum; lib NEG_0; store rgA rgB        # word 0: A = NEG_0 + C_0
+	psh rgAH; pop rgB; lia NEG_1; load rgA rgA; sum; lib C_1; load rgB rgB; sum; lib NEG_1; store rgA rgB  # word 1: A = carry + NEG_1 + C_1
+	psh rgAH; pop rgB; lia NEG_2; load rgA rgA; sum; lib C_2; load rgB rgB; sum; lib NEG_2; store rgA rgB  # word 2: A = carry + NEG_2 + C_2
+	jmp; STEP_ON                                                                         # (SIGN == 1 was added to NEG)
 @ ADD_TO_SUM
-	# SUM = SUM + C
-	lia SUM_0; load rgA rgA; lib C_0; load rgB rgB; sum; lib SUM_0; store rgA rgB
-	psh rgAH; pop rgB; lia SUM_1; load rgA rgA; sum; lib C_1; load rgB rgB; sum; lib SUM_1; store rgA rgB
-	psh rgAH; pop rgB; lia SUM_2; load rgA rgA; sum; lib C_2; load rgB rgB; sum; lib SUM_2; store rgA rgB
+	# SUM = SUM + C      (three words, lowest first; the carry travels in rgAH)
+	lia SUM_0; load rgA rgA; lib C_0; load rgB rgB; sum; lib SUM_0; store rgA rgB        # word 0: A = SUM_0 + C_0
+	psh rgAH; pop rgB; lia SUM_1; load rgA rgA; sum; lib C_1; load rgB rgB; sum; lib SUM_1; store rgA rgB  # word 1: A = carry + SUM_1 + C_1
+	psh rgAH; pop rgB; lia SUM_2; load rgA rgA; sum; lib C_2; load rgB rgB; sum; lib SUM_2; store rgA rgB  # word 2: A = carry + SUM_2 + C_2
 @ STEP_ON
-	# C = C + S
-	lia C_0; load rgA rgA; lib S_0; load rgB rgB; sum; lib C_0; store rgA rgB
-	psh rgAH; pop rgB; lia C_1; load rgA rgA; sum; lib S_1; load rgB rgB; sum; lib C_1; store rgA rgB
-	psh rgAH; pop rgB; lia C_2; load rgA rgA; sum; lib S_2; load rgB rgB; sum; lib C_2; store rgA rgB
+	# C = C + S      (three words, lowest first; the carry travels in rgAH)
+	lia C_0; load rgA rgA; lib S_0; load rgB rgB; sum; lib C_0; store rgA rgB            # word 0: A = C_0 + S_0
+	psh rgAH; pop rgB; lia C_1; load rgA rgA; sum; lib S_1; load rgB rgB; sum; lib C_1; store rgA rgB  # word 1: A = carry + C_1 + S_1
+	psh rgAH; pop rgB; lia C_2; load rgA rgA; sum; lib S_2; load rgB rgB; sum; lib C_2; store rgA rgB  # word 2: A = carry + C_2 + S_2
 	jmp; ADD_CANDIDATES
 
+# Skip this family without reading its step sizes:  SRC = NEXT
 @ SKIP_K
-	lia NEXT; load rgA rgA; lib SRC; store rgA rgB
+	lia NEXT; load rgA rgA; lib SRC; store rgA rgB                                       # SRC = NEXT
 	jmp; NEXT_K
 
-# Take off what was counted twice. Then write the sum as decimal digits: count how often each power
-# of ten fits, largest power first. This is the same walk as above, from C = 0 towards LO = SUM + 1.
+# ==== finish: SUM = SUM - NEG, then write SUM as decimal digits ====
+# A digit is how often a power of ten fits into what is left. Without division that is counting:
+#     SUM = SUM - NEG
+#     LO = SUM + 1; C = 0
+#     for S in 10^14, 10^13, ..., 10, 1:
+#         STEP_UP                        # while C + S < LO: C = C + S; COUNT = COUNT + 1
+#         memory[DIGIT] = COUNT; DIGIT = DIGIT + 1
+# C climbs from 0 to exactly SUM, and COUNT is one decimal digit each time. "C + S < SUM + 1" is
+# "C + S <= SUM", which is why LO is set to SUM + 1: STEP_UP only knows "below LO".
 @ ALL_RANGES_DONE
-	# SUM = SUM - NEG. A word's borrow shows as 0xFFFF in rgAH; copied into both halves of B it is -1.
-	lia SUM_0; load rgA rgA; lib NEG_0; load rgB rgB; sub; lib SUM_0; store rgA rgB
-	psh rgAH; pop rgB; psh rgAH; pop rgBH; lia SUM_1; load rgA rgA; sum; lib NEG_1; load rgB rgB; sub; lib SUM_1; store rgA rgB
-	psh rgAH; pop rgB; psh rgAH; pop rgBH; lia SUM_2; load rgA rgA; sum; lib NEG_2; load rgB rgB; sub; lib SUM_2; store rgA rgB
-	# LO = SUM + ONE
-	lia SUM_0; load rgA rgA; lib ONE_0; load rgB rgB; sum; lib LO_0; store rgA rgB
-	psh rgAH; pop rgB; lia SUM_1; load rgA rgA; sum; lib ONE_1; load rgB rgB; sum; lib LO_1; store rgA rgB
-	psh rgAH; pop rgB; lia SUM_2; load rgA rgA; sum; lib ONE_2; load rgB rgB; sum; lib LO_2; store rgA rgB
-	lia 0; lib C_0; store rgA rgB; lib C_1; store rgA rgB; lib C_2; store rgA rgB
-	lia POWERS; load rgA rgA; lib SRC; store rgA rgB
+	# SUM = SUM - NEG, word by word, lowest first. When a word needs to borrow, the 32-bit result is
+	# negative and rgAH reads 0xFFFF. Copying rgAH into both halves of B makes B = -1 (or 0 when there
+	# was no borrow), and adding that to the next word takes the borrow off.
+	lia SUM_0; load rgA rgA; lib NEG_0; load rgB rgB; sub; lib SUM_0; store rgA rgB      # word 0: A = SUM_0 - NEG_0
+	psh rgAH; pop rgB; psh rgAH; pop rgBH; lia SUM_1; load rgA rgA; sum; lib NEG_1; load rgB rgB; sub; lib SUM_1; store rgA rgB  # word 1: A = SUM_1 + borrow (0 or -1) - NEG_1
+	psh rgAH; pop rgB; psh rgAH; pop rgBH; lia SUM_2; load rgA rgA; sum; lib NEG_2; load rgB rgB; sub; lib SUM_2; store rgA rgB  # word 2: A = SUM_2 + borrow (0 or -1) - NEG_2
+	# LO = SUM + ONE      (three words, lowest first; the carry travels in rgAH)
+	lia SUM_0; load rgA rgA; lib ONE_0; load rgB rgB; sum; lib LO_0; store rgA rgB       # word 0: A = SUM_0 + ONE_0
+	psh rgAH; pop rgB; lia SUM_1; load rgA rgA; sum; lib ONE_1; load rgB rgB; sum; lib LO_1; store rgA rgB  # word 1: A = carry + SUM_1 + ONE_1
+	psh rgAH; pop rgB; lia SUM_2; load rgA rgA; sum; lib ONE_2; load rgB rgB; sum; lib LO_2; store rgA rgB  # word 2: A = carry + SUM_2 + ONE_2
+	lia 0; lib C_0; store rgA rgB; lib C_1; store rgA rgB; lib C_2; store rgA rgB        # C = 0
+	lia POWERS; load rgA rgA; lib SRC; store rgA rgB                                     # SRC = the table of powers of ten
 @ NEXT_DIGIT
-	lia S_0; lib DST; store rgA rgB
-	call; COPY_3
+	lia S_0; lib DST; store rgA rgB                                                      # DST = the address of S
+	call; COPY_3                                                                         # S = the next power of ten
 	# A power of 0 ends the table
 	lia S_0; load rgA rgA; lib S_1; load rgB rgB; or; lib S_2; load rgB rgB; or; lib 0
 	jmp eq; END
-	call; STEP_UP
-	lia COUNT; load rgA rgA; lib DIGIT; load rgB rgB; store rgA rgB
-	lia DIGIT; load rgA rgA; lib 1; sum; lib DIGIT; store rgA rgB
+	call; STEP_UP                                                                        # COUNT = how often S fits
+	lia COUNT; load rgA rgA; lib DIGIT; load rgB rgB; store rgA rgB                      # memory[DIGIT] = COUNT   (B holds the address in DIGIT)
+	lia DIGIT; load rgA rgA; lib 1; sum; lib DIGIT; store rgA rgB                        # DIGIT = DIGIT + 1
 	jmp; NEXT_DIGIT
 
+# The word 0 stops the CPU on its Breakpoint.
 @ END
 	non
 
 # ---- Subroutines ----
 origin 0x1800
 # STEP_UP: add S to C as often as the result stays below LO. COUNT is the number of steps.
+#     COUNT = 0
+#     loop:
+#         T = C + S                      # try the step in T first
+#         if not T < LO: return          # too far: C stays as it is
+#         C = T; COUNT = COUNT + 1
+# Used twice: to walk a candidate up to a range (COUNT is ignored), and to produce decimal digits.
 @ STEP_UP
-	lia 0; lib COUNT; store rgA rgB
+	lia 0; lib COUNT; store rgA rgB                                                      # COUNT = 0
 @ STEP_UP_AGAIN
-	# T = C + S
-	lia C_0; load rgA rgA; lib S_0; load rgB rgB; sum; lib T_0; store rgA rgB
-	psh rgAH; pop rgB; lia C_1; load rgA rgA; sum; lib S_1; load rgB rgB; sum; lib T_1; store rgA rgB
-	psh rgAH; pop rgB; lia C_2; load rgA rgA; sum; lib S_2; load rgB rgB; sum; lib T_2; store rgA rgB
-	# compare T with LO: nega if T < LO, zero if equal
-	lia T_2; load rgA rgA; lib LO_2; load rgB rgB; jmp neq; CMP_5
-	lia T_1; load rgA rgA; lib LO_1; load rgB rgB; jmp neq; CMP_5
-	lia T_0; load rgA rgA; lib LO_0; load rgB rgB
+	# T = C + S      (three words, lowest first; the carry travels in rgAH)
+	lia C_0; load rgA rgA; lib S_0; load rgB rgB; sum; lib T_0; store rgA rgB            # word 0: A = C_0 + S_0
+	psh rgAH; pop rgB; lia C_1; load rgA rgA; sum; lib S_1; load rgB rgB; sum; lib T_1; store rgA rgB  # word 1: A = carry + C_1 + S_1
+	psh rgAH; pop rgB; lia C_2; load rgA rgA; sum; lib S_2; load rgB rgB; sum; lib T_2; store rgA rgB  # word 2: A = carry + C_2 + S_2
+	# compare T with LO, highest word first; afterwards: nega if T < LO, zero if equal
+	lia T_2; load rgA rgA; lib LO_2; load rgB rgB; jmp neq; CMP_5                        # word 2 differs: it decides
+	lia T_1; load rgA rgA; lib LO_1; load rgB rgB; jmp neq; CMP_5                        # word 1 differs: it decides
+	lia T_0; load rgA rgA; lib LO_0; load rgB rgB                                        # otherwise word 0 decides
 @ CMP_5
-	sub
-	jmp nega; STEP_UP_TAKE
-	ret
+	sub                                                                                  # A - B sets the flags zero and nega
+	jmp nega; STEP_UP_TAKE                                                               # T < LO: take the step
+	ret                                                                                  # otherwise done
 @ STEP_UP_TAKE
+	# C = T, word by word
 	lia T_0; load rgA rgA; lib C_0; store rgA rgB; lia T_1; load rgA rgA; lib C_1; store rgA rgB; lia T_2; load rgA rgA; lib C_2; store rgA rgB
-	lia COUNT; load rgA rgA; lib 1; sum; lib COUNT; store rgA rgB
+	lia COUNT; load rgA rgA; lib 1; sum; lib COUNT; store rgA rgB                        # COUNT = COUNT + 1
 	jmp; STEP_UP_AGAIN
 
-# COPY_3: copy three words from the address in SRC to the address in DST; both move on by three.
+# COPY_3: copy three words (one number) from the address in SRC to the address in DST; both move on by three.
+#     repeat 3 times: memory[DST] = memory[SRC]; SRC = SRC + 1; DST = DST + 1
 @ COPY_3
 	call; COPY_1
 	call; COPY_1
@@ -274,117 +373,126 @@ origin 0x1800
 	ret
 
 # COPY_1: copy one word from the address in SRC to the address in DST; both move on by one.
+#     memory[DST] = memory[SRC]; SRC = SRC + 1; DST = DST + 1
+# SRC and DST are pointers: variables that hold an address. Reading through one takes two loads:
+# first the address into B, then the word at that address.
 @ COPY_1
-	lib SRC; load rgB rgB; load rgA rgB; lib DST; load rgB rgB; store rgA rgB
-	lia SRC; load rgA rgA; lib 1; sum; lib SRC; store rgA rgB
-	lia DST; load rgA rgA; lib 1; sum; lib DST; store rgA rgB
+	lib SRC; load rgB rgB; load rgA rgB; lib DST; load rgB rgB; store rgA rgB            # A = memory[SRC]; memory[DST] = A
+	lia SRC; load rgA rgA; lib 1; sum; lib SRC; store rgA rgB                            # SRC = SRC + 1
+	lia DST; load rgA rgA; lib 1; sum; lib DST; store rgA rgB                            # DST = DST + 1
 	ret
 
 # ---- The table of families ----
-# Per family: the address of the next entry; SIGN; the smallest candidate 10^(k-1) * M; the largest,
-# 10^n - 1; then the steps M * 10^j for j = k-1 down to 0. An entry with address 0 ends it.
+# One entry per family:
+#     1 word    the address of the next entry (0 in the last, empty entry)
+#     1 word    SIGN: 0 = add the family to SUM, 1 = add it to NEG (to be subtracted at the end)
+#     3 words   the smallest candidate, 10^(k-1) * M             e.g. 4 digits: 10 * 101 = 1010
+#     3 words   the largest candidate, 10^n - 1                   e.g. 4 digits: 9999
+#     3 words each: the steps M * 10^j for j = k-1 down to 0     e.g. 4 digits: 1010, 101
+# A number is written low word first: 1000010000 = 0x3B9A_F110 is  0xF110; 0x3B9A; 0x0000.
 origin 0x3000
 # 2 digits, a block of 1 repeated 2 times: M = 11, candidates 11 to 99
-0x300B; 0
-0x000B; 0x0000; 0x0000
-0x0063; 0x0000; 0x0000
-0x000B; 0x0000; 0x0000
+0x300B; 0                     # next entry; SIGN = 0: added
+0x000B; 0x0000; 0x0000        # smallest 11
+0x0063; 0x0000; 0x0000        # largest 99
+0x000B; 0x0000; 0x0000        # step 11
 # 3 digits, a block of 1 repeated 3 times: M = 111, candidates 111 to 999
-0x3016; 0
-0x006F; 0x0000; 0x0000
-0x03E7; 0x0000; 0x0000
-0x006F; 0x0000; 0x0000
+0x3016; 0                     # next entry; SIGN = 0: added
+0x006F; 0x0000; 0x0000        # smallest 111
+0x03E7; 0x0000; 0x0000        # largest 999
+0x006F; 0x0000; 0x0000        # step 111
 # 4 digits, a block of 2 repeated 2 times: M = 101, candidates 1010 to 9999
-0x3024; 0
-0x03F2; 0x0000; 0x0000
-0x270F; 0x0000; 0x0000
-0x03F2; 0x0000; 0x0000
-0x0065; 0x0000; 0x0000
+0x3024; 0                     # next entry; SIGN = 0: added
+0x03F2; 0x0000; 0x0000        # smallest 1010
+0x270F; 0x0000; 0x0000        # largest 9999
+0x03F2; 0x0000; 0x0000        # step 1010
+0x0065; 0x0000; 0x0000        # step 101
 # 5 digits, a block of 1 repeated 5 times: M = 11111, candidates 11111 to 99999
-0x302F; 0
-0x2B67; 0x0000; 0x0000
-0x869F; 0x0001; 0x0000
-0x2B67; 0x0000; 0x0000
+0x302F; 0                     # next entry; SIGN = 0: added
+0x2B67; 0x0000; 0x0000        # smallest 11111
+0x869F; 0x0001; 0x0000        # largest 99999
+0x2B67; 0x0000; 0x0000        # step 11111
 # 6 digits, a block of 3 repeated 2 times: M = 1001, candidates 100100 to 999999
-0x3040; 0
-0x8704; 0x0001; 0x0000
-0x423F; 0x000F; 0x0000
-0x8704; 0x0001; 0x0000
-0x271A; 0x0000; 0x0000
-0x03E9; 0x0000; 0x0000
+0x3040; 0                     # next entry; SIGN = 0: added
+0x8704; 0x0001; 0x0000        # smallest 100100
+0x423F; 0x000F; 0x0000        # largest 999999
+0x8704; 0x0001; 0x0000        # step 100100
+0x271A; 0x0000; 0x0000        # step 10010
+0x03E9; 0x0000; 0x0000        # step 1001
 # 6 digits, a block of 2 repeated 3 times: M = 10101, candidates 101010 to 999999
-0x304E; 0
-0x8A92; 0x0001; 0x0000
-0x423F; 0x000F; 0x0000
-0x8A92; 0x0001; 0x0000
-0x2775; 0x0000; 0x0000
+0x304E; 0                     # next entry; SIGN = 0: added
+0x8A92; 0x0001; 0x0000        # smallest 101010
+0x423F; 0x000F; 0x0000        # largest 999999
+0x8A92; 0x0001; 0x0000        # step 101010
+0x2775; 0x0000; 0x0000        # step 10101
 # 6 digits, a block of 1 repeated 6 times: M = 111111, candidates 111111 to 999999, subtracted
-0x3059; 1
-0xB207; 0x0001; 0x0000
-0x423F; 0x000F; 0x0000
-0xB207; 0x0001; 0x0000
+0x3059; 1                     # next entry; SIGN = 1: subtracted
+0xB207; 0x0001; 0x0000        # smallest 111111
+0x423F; 0x000F; 0x0000        # largest 999999
+0xB207; 0x0001; 0x0000        # step 111111
 # 7 digits, a block of 1 repeated 7 times: M = 1111111, candidates 1111111 to 9999999
-0x3064; 0
-0xF447; 0x0010; 0x0000
-0x967F; 0x0098; 0x0000
-0xF447; 0x0010; 0x0000
+0x3064; 0                     # next entry; SIGN = 0: added
+0xF447; 0x0010; 0x0000        # smallest 1111111
+0x967F; 0x0098; 0x0000        # largest 9999999
+0xF447; 0x0010; 0x0000        # step 1111111
 # 8 digits, a block of 4 repeated 2 times: M = 10001, candidates 10001000 to 99999999
-0x3078; 0
-0x9A68; 0x0098; 0x0000
-0xE0FF; 0x05F5; 0x0000
-0x9A68; 0x0098; 0x0000
-0x42A4; 0x000F; 0x0000
-0x86AA; 0x0001; 0x0000
-0x2711; 0x0000; 0x0000
+0x3078; 0                     # next entry; SIGN = 0: added
+0x9A68; 0x0098; 0x0000        # smallest 10001000
+0xE0FF; 0x05F5; 0x0000        # largest 99999999
+0x9A68; 0x0098; 0x0000        # step 10001000
+0x42A4; 0x000F; 0x0000        # step 1000100
+0x86AA; 0x0001; 0x0000        # step 100010
+0x2711; 0x0000; 0x0000        # step 10001
 # 9 digits, a block of 3 repeated 3 times: M = 1001001, candidates 100100100 to 999999999
-0x3089; 0
-0x6804; 0x05F7; 0x0000
-0xC9FF; 0x3B9A; 0x0000
-0x6804; 0x05F7; 0x0000
-0xBD9A; 0x0098; 0x0000
-0x4629; 0x000F; 0x0000
+0x3089; 0                     # next entry; SIGN = 0: added
+0x6804; 0x05F7; 0x0000        # smallest 100100100
+0xC9FF; 0x3B9A; 0x0000        # largest 999999999
+0x6804; 0x05F7; 0x0000        # step 100100100
+0xBD9A; 0x0098; 0x0000        # step 10010010
+0x4629; 0x000F; 0x0000        # step 1001001
 # 10 digits, a block of 5 repeated 2 times: M = 100001, candidates 1000010000 to 9999999999
-0x30A0; 0
-0xF110; 0x3B9A; 0x0000
-0xE3FF; 0x540B; 0x0002
-0xF110; 0x3B9A; 0x0000
-0xE4E8; 0x05F5; 0x0000
-0x96E4; 0x0098; 0x0000
-0x424A; 0x000F; 0x0000
-0x86A1; 0x0001; 0x0000
+0x30A0; 0                     # next entry; SIGN = 0: added
+0xF110; 0x3B9A; 0x0000        # smallest 1000010000
+0xE3FF; 0x540B; 0x0002        # largest 9999999999
+0xF110; 0x3B9A; 0x0000        # step 1000010000
+0xE4E8; 0x05F5; 0x0000        # step 100001000
+0x96E4; 0x0098; 0x0000        # step 10000100
+0x424A; 0x000F; 0x0000        # step 1000010
+0x86A1; 0x0001; 0x0000        # step 100001
 # 10 digits, a block of 2 repeated 5 times: M = 101010101, candidates 1010101010 to 9999999999
-0x30AE; 0
-0xEB12; 0x3C34; 0x0000
-0xE3FF; 0x540B; 0x0002
-0xEB12; 0x3C34; 0x0000
-0x4AB5; 0x0605; 0x0000
+0x30AE; 0                     # next entry; SIGN = 0: added
+0xEB12; 0x3C34; 0x0000        # smallest 1010101010
+0xE3FF; 0x540B; 0x0002        # largest 9999999999
+0xEB12; 0x3C34; 0x0000        # step 1010101010
+0x4AB5; 0x0605; 0x0000        # step 101010101
 # 10 digits, a block of 1 repeated 10 times: M = 1111111111, candidates 1111111111 to 9999999999, subtracted
-0x30B9; 1
-0x35C7; 0x423A; 0x0000
-0xE3FF; 0x540B; 0x0002
-0x35C7; 0x423A; 0x0000
-0; 0; 0; 0; 0; 0; 0; 0
+0x30B9; 1                     # next entry; SIGN = 1: subtracted
+0x35C7; 0x423A; 0x0000        # smallest 1111111111
+0xE3FF; 0x540B; 0x0002        # largest 9999999999
+0x35C7; 0x423A; 0x0000        # step 1111111111
+0; 0; 0; 0; 0; 0; 0; 0                                                                # the end of the table: an entry whose next address is 0
 
 # ---- Powers of ten, 10^14 down to 1, then 0 ----
 origin 0x3100
-0x4000; 0x107A; 0x5AF3
-0xA000; 0x4E72; 0x0918
-0x1000; 0xD4A5; 0x00E8
-0xE800; 0x4876; 0x0017
-0xE400; 0x540B; 0x0002
-0xCA00; 0x3B9A; 0x0000
-0xE100; 0x05F5; 0x0000
-0x9680; 0x0098; 0x0000
-0x4240; 0x000F; 0x0000
-0x86A0; 0x0001; 0x0000
-0x2710; 0x0000; 0x0000
-0x03E8; 0x0000; 0x0000
-0x0064; 0x0000; 0x0000
-0x000A; 0x0000; 0x0000
-0x0001; 0x0000; 0x0000
+0x4000; 0x107A; 0x5AF3        # 10^14
+0xA000; 0x4E72; 0x0918        # 10^13
+0x1000; 0xD4A5; 0x00E8        # 10^12
+0xE800; 0x4876; 0x0017        # 10^11
+0xE400; 0x540B; 0x0002        # 10^10
+0xCA00; 0x3B9A; 0x0000        # 10^9
+0xE100; 0x05F5; 0x0000        # 10^8
+0x9680; 0x0098; 0x0000        # 10^7
+0x4240; 0x000F; 0x0000        # 10^6
+0x86A0; 0x0001; 0x0000        # 10^5
+0x2710; 0x0000; 0x0000        # 10^4
+0x03E8; 0x0000; 0x0000        # 10^3
+0x0064; 0x0000; 0x0000        # 10^2
+0x000A; 0x0000; 0x0000        # 10^1
+0x0001; 0x0000; 0x0000        # 10^0
 0; 0; 0
 
 # ---- The input: 11 ranges ----
+# Per range: the first ID, then the last ID, each as three words, low word first.
 origin 0x2000
 # 11-22
 0x000B; 0x0000; 0x0000
