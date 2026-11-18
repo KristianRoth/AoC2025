@@ -177,4 +177,5 @@ macro  store { sto | a? | (b? >> 6) }
 | if a == b: goto L | `lia a; load rgA rgA; lib b; load rgB rgB; jmp eq; L` | 5 |
 | if a < b: goto L | `lia a; load rgA rgA; lib b; load rgB rgB; sub; jmp nega; L` | 6 |
 | if a >= b: goto L | the same with `jmp carry; L` | 6 |
+| goto the address in A | `psh rgA; pop rgSP` (`rgSP` is the program counter) | 2 |
 | add two numbers wider than 32 bits | word by word from the lowest; after each `sum` the carry is in the upper half: `psh rgAH; pop rgB` moves it into B for the next word (see day 2) | |
