@@ -48,7 +48,8 @@ All work on the full 32 bits: A = A op B.
 ## Stack and calls
 - `psh X` pushes one 16-bit register half; `pop X` pops into one. `psh rgA; pop rgB` copies A's low half into B and leaves rgBH alone.
 - `call; <address>` and `ret` work and nest.
-- `psh rgSP` pushes the address of the code being executed (the program counter), `psh rgSB` pushed `0xE000` (the stack). Popping into them was not tested.
+- `psh rgSP` pushes the address of the code being executed (the program counter), `psh rgSB` pushed `0xE000` (the stack).
+- **A jump to an address held in memory or a register is possible** (tested 2026-11-18): `rgSP` is the program counter, so `load rgSP rgA` (jump to the address stored at the address in A) and `psh rgA; pop rgSP` (jump to the address in A) both continue at that address. `psh rgA; ret` does not work as a jump.
 
 ## The shift fix (2026-11-17)
 The shift did not work on the CPU as first built. Traced in the engine after the owner pointed at the two places.
