@@ -93,25 +93,88 @@ Notes on the day 3 solutions:
 
 ## Instruction set
 
-What each instruction really does, as found by test programs, is in [`findings/cpu-instructions.md`](findings/cpu-instructions.md).
+How to read this: an instruction is one 16-bit memory word. The names in the first column are the symbols every program defines at its top (copy them from any day's file). `jmp` and `call` are followed by a second word, the address. How each behaviour was found, and the fixes to the boards, are in [`findings/cpu-instructions.md`](findings/cpu-instructions.md).
 
-Each instruction is one 16-bit word; Jump and Call are followed by a 16-bit address word.
+### The machine
+
+| Part | What it is |
+|---|---|
+| A, B | Two 32-bit registers. `rgA` and `rgB` name their lower 16 bits, `rgAH` and `rgBH` their upper 16 bits. |
+| Memory | 16-bit words at 16-bit addresses (`0x0000`–`0xFFFF`). |
+| Flags | `zero`, `carry`, `nega`: set by `sum` and `sub`, kept until the next one. `eq`, `neq`: not stored, they compare A with B at the moment of the jump. |
+| Stack | Used by `psh`, `pop`, `call`, `ret`. It starts at `0xE000`. |
+| Start | The CPU begins at `0xFF00`. Only 256 words follow, so a program puts `jmp; MAIN` there and lives elsewhere. |
+| Stop | The word `0` (`non`) stops the CPU on its Breakpoint. |
+
+### Instructions
+
+`n` is a number from 0 to 4095. `X` is one of `rgA`, `rgAH`, `rgB`, `rgBH`. Ticks are measured in the engine.
+
+| Write | Word (bits) | What it does | Flags | Ticks |
+|---|---|---|---|---|
+| `lia n` | `0011 nnnn nnnn nnnn` | A = n. **The upper half of A becomes 0.** | unchanged | 256 |
+| `lib n` | `0100 nnnn nnnn nnnn` | B = n. **The upper half of B becomes 0.** | unchanged | 256 |
+| `load X rgB` | `0010 dddd dd00 0100` | X = the memory word at the address in B. Only those 16 bits of the register change. | unchanged | 256 |
+| `load X rgA` | `0010 dddd dd01 0000` | The same, with the address in A. | unchanged | 256 |
+| `store X rgB` | `0101 ssss ss00 0100` | The memory word at the address in B = X. | unchanged | 256 |
+| `store X rgA` | `0101 ssss ss01 0000` | The same, with the address in A. | unchanged | 256 |
+| `sum` | `0110 0100 0000 0000` | A = A + B, all 32 bits. | zero: result is 0. carry: carried out of bit 31. nega: bit 31 of the result. | 256 |
+| `sub` | `0110 0010 0000 0000` | A = A - B, all 32 bits. | zero: A was equal to B. carry: A >= B (no borrow). nega: A < B (for values below 2^31). | 256 |
+| `and` | `0110 0000 1000 0000` | A = A and B, bit by bit. | **not usable** (see below) | 256 |
+| `or` | `0110 0000 0100 0000` | A = A or B, bit by bit. | not usable | 256 |
+| `xor` | `0110 0000 0010 0000` | A = A xor B, bit by bit. | not usable | 256 |
+| `neg` | `0110 0000 0001 0000` | A = every bit of A flipped (NOT). For -A, add 1 afterwards. | not usable | 256 |
+| `shf \| k` | `0110 0001 0000 kkkk` | A = A shifted left by k places (k from 0 to 15), zeros shifted in. There is no right shift. | not tested | 256 |
+| `psh X` | `1010 xxxx xx00 0000` | Push the 16 bits of X on the stack. | unchanged | 576 with its `pop` |
+| `pop X` | `1011 xxxx xx00 0000` | Pop 16 bits from the stack into X. The other half of the register is unchanged. | unchanged | |
+| `jmp; addr` | `1100 0000 0000 0000`, then the address | Continue at addr. | unchanged | 320 |
+| `jmp c; addr` | `1100 cccc c000 0000`, then the address | Continue at addr if condition c holds; otherwise go on. Several conditions: jump if any holds. | unchanged | 320 taken, 192 not |
+| `call; addr` | `1110 0000 0000 0000`, then the address | Remember where to return and continue at addr. Calls nest. | unchanged | 1,088 with its `ret` |
+| `ret` | `1111 0000 0000 0000` | Return to just after the `call`. | unchanged | |
+| `non` | `0000 0000 0000 0000` | Stops the CPU (Breakpoint). | | |
+
+The register bits `dddddd`, `ssssss` and `xxxxxx` are, from the left: `rgAH`, `rgA`, `rgBH`, `rgB`, then two for the program counter and the stack, which programs leave alone. The programs build `load` and `store` with the two macros from day 1:
 
 ```
-1. No-Op:     0000 xxxx xxxx xxxx
-2.
-3. Load:      0010 AaBbPB  AaBbPB
-4. LoadIA:    0011 OOOO OOOO OOOO
-5. LoadIB:    0100 OOOO OOOO OOOO
-6. Store:     0101 AaBbPB  AaBbPB
-7. Op:        0110 xSSS AOXN OOOO
-8. 
-9.
-10.
-11. Push:     1010 AaBb PBxx xxxx
-12. Pop:      1011 AaBb PBxx xxxx
-13. Jump:     1100 zcnq nxxx xxxx - AAAA AAAA AAAA AAAA
-14. 
-15. Call:     1110 xxxx xxxx xxxx - AAAA AAAA AAAA AAAA
-16. Ret:      1111 xxxx xxxx xxxx
+macro  load  { ld  | a? | (b? >> 6) }     # load X Y: the register X, the address register Y
+macro  store { sto | a? | (b? >> 6) }
 ```
+
+### Jump conditions
+
+| Write | Bit | Jumps when |
+|---|---|---|
+| `zero` | `1000 0000 0000` | the last `sum` or `sub` gave 0 |
+| `carry` | `0100 0000 0000` | the last `sum` carried out, or the last `sub` did not borrow (A >= B) |
+| `nega` | `0010 0000 0000` | the last `sum` or `sub` gave a result with bit 31 set (after `sub`: A < B) |
+| `eq` | `0001 0000 0000` | A equals B right now, all 32 bits; no `sub` needed |
+| `neq` | `0000 1000 0000` | A differs from B right now |
+
+### Things that surprise
+
+- **`lia` and `lib` clear the upper half** of their register. Load the upper half (`load rgAH …`) after the lower one, never before.
+- **`lib` is needed for every store**, so storing uses up B: `lib v; store rgA rgB`.
+- **After `and`, `or`, `xor` and `neg` the flags are wrong.** `zero` is 0 even when the result is 0. To test such a result, compare it: `lib 0; jmp eq; …`.
+- **An address above `0x0FFF` cannot be written in an instruction** (`lia`/`lib` take 12 bits). Keep it in a variable and load it.
+- **Naming two registers in one instruction does not do two things.** A load puts the same word in both; a store or push writes the OR of both.
+- **`sum_32`, `sub_32` and the other `_32` symbols** set a bit the CPU ignores. They do the same as the plain ones; every operation is 32 bits wide.
+- **No multiply, divide, right shift or add-with-carry.** Multiply by a power of two with `shf`, by a small constant with repeated `sum`.
+
+### The idioms every program is built from
+
+`v` is a variable: a `pointer` with an address below `0x1000`.
+
+| To do this | Write | Instructions |
+|---|---|---|
+| A = variable v | `lia v; load rgA rgA` | 2 |
+| B = variable v | `lib v; load rgB rgB` | 2 |
+| variable v = A | `lib v; store rgA rgB` | 2 |
+| v = v + 1 | `lia v; load rgA rgA; lib 1; sum; lib v; store rgA rgB` | 6 |
+| B = A (lower half) | `psh rgA; pop rgB` | 2 |
+| A = A + A | `lib 0; psh rgA; pop rgB; sum` (for A below 65,536) | 4 |
+| A = the word a pointer variable p points at | `lia 0; lib p; load rgB rgB; load rgA rgB` | 4 |
+| the word p points at = A | `lib p; load rgB rgB; store rgA rgB` | 3 |
+| if a == b: goto L | `lia a; load rgA rgA; lib b; load rgB rgB; jmp eq; L` | 5 |
+| if a < b: goto L | `lia a; load rgA rgA; lib b; load rgB rgB; sub; jmp nega; L` | 6 |
+| if a >= b: goto L | the same with `jmp carry; L` | 6 |
+| add two numbers wider than 32 bits | word by word from the lowest; after each `sum` the carry is in the upper half: `psh rgAH; pop rgB` moves it into B for the next word (see day 2) | |
