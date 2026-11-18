@@ -68,7 +68,7 @@ Measured in the `vcb` engine on `cpu-32bit-autorun-aoc1p1.vcb`, to the Breakpoin
 Notes on the day 2 solutions:
 
 - **They never test an ID.** The input ranges hold about 2.6 million IDs. The programs generate only the invalid ones: about 1,700 are added in part 1. Checking every ID would take thousands of times longer on this CPU, which has no multiply or divide.
-- **Where the time goes.** Reaching the first invalid ID of a range is done by walking up in decimal steps (`STEP_UP`), at most nine steps per decimal digit. Each step is one 48-bit addition and one comparison, about 45 instructions. Part 2 runs longer than part 1 because it has 13 families of repeated blocks per range in place of 5.
+- **Where the time goes.** Reaching the first invalid ID of a range is done by walking up in decimal steps (`STEP_UP`), at most nine steps per decimal digit. Each step taken is one 48-bit addition, one comparison and one copy, about 60 instructions. Part 2 runs longer than part 1 because it has 13 families of repeated blocks per range in place of 5.
 - **Most instructions only move data.** Loading a variable takes two instructions (`lia v; load rgA rgA`) and so does storing one. In part 2, 73% of the instructions in the code are such pairs or the carry move.
 - **Code size:** part 1 has 355 instructions and part 2 has 419; the rest of the words are the tables and the input.
 
