@@ -1,0 +1,279 @@
+# Advent of Code 2025, day 3 part 2 (Lobby), with the puzzle's example as input (answer 3121910778619)
+#
+# THE PUZZLE
+# Each line of the input is a bank of batteries, each battery a digit 1-9. From every bank exactly twelve
+# batteries are switched on; the bank's joltage is the 12-digit number they form, in their order in the
+# bank. The answer is the sum of the largest joltage of every bank.
+#
+# THE IDEA
+# Choosing 12 digits out of a bank of n is the same as dropping n - 12 of them. A larger digit further
+# left always wins, so: go through the bank once and keep the chosen digits on a stack. Before a new
+# digit D goes on the stack, throw away the digits on top of it that are smaller than D, as long as
+# drops are left. The first 12 digits on the stack at the end are the answer for the bank.
+# Example 234234234234278 (15 digits, 3 drops):
+#     2            stack 2
+#     3   drop 2   stack 3              (2 drops left)
+#     4   drop 3   stack 4              (1 drop left)
+#     2            stack 4 2
+#     3   drop 2   stack 4 3            (no drops left: from here every digit is kept)
+#     ...          stack 4 3 4 2 3 4 2 3 4 2 7 8      = 434234234278
+# When a bank never uses all its drops (987654321111111), the stack ends up longer than 12 and the
+# digits beyond the twelfth are the ones dropped.
+#
+# NO BIG NUMBERS
+# A joltage has 12 digits (40 bits) and the sum needs more, but the program never forms such a number.
+# It adds the chosen digits column by column: the first digits of all banks into one cell, the second
+# digits into the next, and so on. Those twelve column sums already are the answer, written with
+# "digits" that are too large. At the end the cells are put right from the last one to the first:
+# each keeps its value modulo 10 and hands the rest, divided by 10, to the cell before it. That is the
+# carrying of a written addition. The result cells are used for the column sums from the start.
+#
+# THE WHOLE PROGRAM IN PSEUDO CODE
+#     RESULT[0..14] = 0                         # 15 cells; a bank's 12 digits go to cells 3..14
+#     loop:
+#         END = IN; while input[END] != 0: END = END + 1       # find the end of the bank
+#         if END == IN: break                   # an empty bank: the end of the input
+#         DROPS = (END - IN) - 12
+#         TOP = STACK                           # the stack is empty; TOP is where the next digit goes
+#         while IN != END:
+#             D = input[IN]; IN = IN + 1
+#             while DROPS != 0 and memory[TOP - 1] < D:        # the word below the stack is a 9,
+#                 TOP = TOP - 1; DROPS = DROPS - 1             # so an empty stack never "has" a smaller digit
+#             memory[TOP] = D; TOP = TOP + 1
+#         for i = 0..11: RESULT[3 + i] = RESULT[3 + i] + STACK[i]
+#         IN = IN + 1                           # step over the 0
+#     CARRY = 0
+#     for P = 14 down to 0:                     # the carrying
+#         X = RESULT[P] + CARRY
+#         CARRY = 0; while X >= 10: X = X - 10; CARRY = CARRY + 1
+#         RESULT[P] = X
+#     stop
+#
+# THE RESULT, when the CPU stops on the Breakpoint at END_OF_PROGRAM
+#   0x0110-0x011E  the sum as 15 decimal digits, one per word, most significant first
+# (There is no binary form of the sum: the program never builds one.)
+#
+# THE INPUT (rule 1 of RULES.md), at 0x2000
+# One word per battery holding its digit, bank after bank; a word 0 ends each bank, and a second 0 after
+# the last bank ends the input. Built-in limits: a bank has 12 to 256 batteries; at most 7,000 banks
+# (a column sum must stay below 65,536).
+#
+# ONE WORD IS ENOUGH
+# Every value here fits in 16 bits, so each variable is one memory word. The idioms used everywhere
+# (v is a variable's address, below 0x1000):
+#     lia v; load rgA rgA      A = the word at v   (lia puts the address in A, load replaces it)
+#     lib v; load rgB rgB      B = the word at v
+#     lib v; store rgA rgB     the word at v = A   (this uses up B)
+#     jmp eq / jmp neq         compares A with B as they are now
+#     sub; jmp nega            after A - B: taken when A < B
+# A variable that holds an address is a pointer (IN, END, TOP, SRC, DST, P). Reading the word it points
+# at takes one more load: lia 0; lib IN; load rgB rgB; load rgA rgB.
+# What each instruction does exactly is in findings/cpu-instructions.md.
+#
+# MEMORY MAP
+#   0x0110-0x011E  the result           0x1000-  the program
+#   0x0120-0x012B  variables            0x2000-  the input (long: 200 banks of 100 end at 0x6EE8)
+#   0x01FF         the 9 below the stack
+#   0x0200-0x02FF  the stack            0xFF00   where the CPU starts
+
+# ---- The CPU's instructions as symbols (the same table as in day 1) ----
+symbol nop 0b0000_0000_0000_0000
+symbol ld  0b0010_0000_0000_0000
+symbol lia 0b0011_0000_0000_0000
+symbol lib 0b0100_0000_0000_0000
+symbol sto 0b0101_0000_0000_0000
+
+macro  load  { ld  | a? | (b? >> 6) }
+macro  store { sto | a? | (b? >> 6) }
+
+symbol sum    0b0110_0100_0000_0000
+symbol sum_32 0b0110_1100_0000_0000
+symbol sub    0b0110_0010_0000_0000
+symbol sub_32 0b0110_1010_0000_0000
+symbol shf    0b0110_0001_0000_0000
+symbol shf_32 0b0110_1001_0000_0000
+symbol and    0b0110_0000_1000_0000
+symbol and_32 0b0110_1000_1000_0000
+symbol or     0b0110_0000_0100_0000
+symbol or_32  0b0110_1000_0100_0000
+symbol xor    0b0110_0000_0010_0000
+symbol xor_32 0b0110_1000_0010_0000
+symbol neg    0b0110_0000_0001_0000
+symbol neg_32 0b0110_1000_0001_0000
+
+symbol psh 0b1010_0000_0000_0000
+symbol pop 0b1011_0000_0000_0000
+
+symbol jmp  0b1100_0000_0000_0000
+symbol call 0b1110_0000_0000_0000
+symbol ret  0b1111_0000_0000_0000
+
+symbol rgAH 0b1000_0000_0000
+symbol rgA  0b0100_0000_0000
+symbol rgBH 0b0010_0000_0000
+symbol rgB  0b0001_0000_0000
+symbol rgSP 0b0000_1000_0000
+symbol rgSB 0b0000_0100_0000
+symbol non  0
+
+symbol zero  0b1000_0000_0000
+symbol carry 0b0100_0000_0000
+symbol nega  0b0010_0000_0000
+symbol eq    0b0001_0000_0000
+symbol neq   0b0000_1000_0000
+
+# ---- Variables (all below 0x1000, so lia/lib can address them) ----
+# The result: 15 cells. RESULT_COLUMNS is the cell for a bank's first digit, RESULT_LAST the last cell.
+pointer RESULT 0x0110 0
+pointer RESULT_COLUMNS 0x0113 0
+pointer RESULT_LAST 0x011E 0
+# The current bank: IN the next digit to read, END the address of the 0 behind the bank,
+# DROPS how many digits may still be thrown away, D the digit just read
+pointer IN 0x0120 0x2000
+pointer END 0x0121 0
+pointer DROPS 0x0122 0
+pointer D 0x0123 0
+# TOP: the address where the next digit goes on the stack
+pointer TOP 0x0124 0
+# For adding the stack to the result, and for the carrying
+pointer SRC 0x0125 0
+pointer DST 0x0126 0
+pointer P 0x0127 0
+pointer X 0x0128 0
+pointer CARRY 0x0129 0
+# Constants that do not fit an instruction's place for a number, or are needed in a register
+pointer TWELFTH 0x012A 0x020C
+pointer FIRST_CELL 0x012B 0x0110
+# The stack of chosen digits, and a 9 just below it that is never smaller than a digit
+pointer BELOW_STACK 0x01FF 9
+pointer STACK 0x0200 0
+
+# ---- The CPU starts at 0xFF00 ----
+origin 0xFF00
+jmp; MAIN
+
+origin 0x1000
+@ MAIN
+# ==== find the end of the next bank ====
+#     END = IN
+#     while input[END] != 0: END = END + 1
+#     if END == IN: goto ALL_BANKS_DONE         # no digit: this 0 ends the input
+@ NEXT_BANK
+	lia IN; load rgA rgA; lib END; store rgA rgB                 # END = IN
+@ FIND_END
+	lia 0; lib END; load rgB rgB; load rgA rgB                   # A = input[END]
+	lib 0                                                        # B = 0, to compare with
+	jmp eq; END_FOUND                                            # input[END] == 0
+	lia END; load rgA rgA; lib 1; sum; lib END; store rgA rgB    # END = END + 1
+	jmp; FIND_END
+@ END_FOUND
+	lia END; load rgA rgA; lib IN; load rgB rgB                  # A = END, B = IN
+	jmp eq; ALL_BANKS_DONE                                       # an empty bank: the input is finished
+
+# ==== start the bank ====
+#     DROPS = (END - IN) - 12                   # A and B still hold END and IN
+#     TOP = STACK                               # an empty stack
+	sub; lib 12; sub; lib DROPS; store rgA rgB                   # DROPS = END - IN - 12
+	lia STACK; lib TOP; store rgA rgB                            # TOP = the address of the stack's first word
+
+# ==== for each digit of the bank ====
+#     D = input[IN]; IN = IN + 1
+@ NEXT_DIGIT
+	lia 0; lib IN; load rgB rgB; load rgA rgB                    # A = input[IN]
+	lib D; store rgA rgB                                         # D = A
+	lia IN; load rgA rgA; lib 1; sum; lib IN; store rgA rgB      # IN = IN + 1
+
+# ==== throw away smaller digits on top of the stack ====
+#     while DROPS != 0 and memory[TOP - 1] < D:
+#         TOP = TOP - 1; DROPS = DROPS - 1
+# TOP - 1 is computed in A and then used as the address: load rgA rgA reads the word A points at.
+# With an empty stack that word is the 9 in BELOW_STACK, and 9 < D is never true.
+@ DROP_SMALLER
+	lia DROPS; load rgA rgA; lib 0                               # A = DROPS, B = 0
+	jmp eq; PUSH                                                 # no drops left
+	lia TOP; load rgA rgA; lib 1; sub                            # A = TOP - 1, the address of the top digit
+	load rgA rgA                                                 # A = the top digit
+	lib D; load rgB rgB                                          # B = D
+	sub                                                          # A - B is negative when the top digit < D
+	jmp nega; DROP_ONE
+	jmp; PUSH                                                    # the top digit is not smaller: keep it
+@ DROP_ONE
+	lia TOP; load rgA rgA; lib 1; sub; lib TOP; store rgA rgB    # TOP = TOP - 1
+	lia DROPS; load rgA rgA; lib 1; sub; lib DROPS; store rgA rgB# DROPS = DROPS - 1
+	jmp; DROP_SMALLER
+
+# ==== put the digit on the stack ====
+#     memory[TOP] = D; TOP = TOP + 1
+#     if IN != END: goto NEXT_DIGIT
+@ PUSH
+	lia D; load rgA rgA; lib TOP; load rgB rgB; store rgA rgB    # memory[TOP] = D   (B holds the address in TOP)
+	lia TOP; load rgA rgA; lib 1; sum; lib TOP; store rgA rgB    # TOP = TOP + 1
+	lia IN; load rgA rgA; lib END; load rgB rgB                  # A = IN, B = END
+	jmp neq; NEXT_DIGIT                                          # more digits in this bank
+
+# ==== add the bank's twelve digits to the column sums ====
+#     SRC = STACK; DST = RESULT_COLUMNS
+#     repeat: memory[DST] = memory[DST] + memory[SRC]; SRC = SRC + 1; DST = DST + 1
+#     until SRC == TWELFTH                      # the address of the stack's 13th word
+# Reading memory[DST] into B takes two loads into B: first the address, then the word there.
+	lia STACK; lib SRC; store rgA rgB                            # SRC = the address of the stack's first word
+	lia RESULT_COLUMNS; lib DST; store rgA rgB                   # DST = the address of the first column's cell
+@ ADD_COLUMN
+	lia 0; lib SRC; load rgB rgB; load rgA rgB                   # A = memory[SRC], a chosen digit
+	lib DST; load rgB rgB; load rgB rgB                          # B = memory[DST], the column sum so far
+	sum                                                          # A = column sum + digit
+	lib DST; load rgB rgB; store rgA rgB                         # memory[DST] = A
+	lia DST; load rgA rgA; lib 1; sum; lib DST; store rgA rgB    # DST = DST + 1
+	lia SRC; load rgA rgA; lib 1; sum; lib SRC; store rgA rgB    # SRC = SRC + 1   (A still holds it)
+	lib TWELFTH; load rgB rgB                                    # B = the address just past the twelfth digit
+	jmp neq; ADD_COLUMN                                          # not all twelve yet
+	lia IN; load rgA rgA; lib 1; sum; lib IN; store rgA rgB      # IN = IN + 1: step over the bank's 0
+	jmp; NEXT_BANK
+
+# ==== the carrying: turn the column sums into decimal digits ====
+#     P = RESULT_LAST; CARRY = 0
+#     loop:
+#         X = memory[P] + CARRY
+#         CARRY = 0
+#         while X >= 10: X = X - 10; CARRY = CARRY + 1         # X modulo 10, and X divided by 10
+#         memory[P] = X
+#         if P == FIRST_CELL: stop
+#         P = P - 1
+# After sub, the carry flag of the CPU is set when A >= B (no borrow). (That flag has nothing to do
+# with the variable CARRY.)
+@ ALL_BANKS_DONE
+	lia RESULT_LAST; lib P; store rgA rgB                        # P = the address of the last cell
+	lia 0; lib CARRY; store rgA rgB                              # CARRY = 0
+@ NEXT_CELL
+	lia 0; lib P; load rgB rgB; load rgA rgB                     # A = memory[P]
+	lib CARRY; load rgB rgB; sum; lib X; store rgA rgB           # X = memory[P] + CARRY
+	lia 0; lib CARRY; store rgA rgB                              # CARRY = 0
+@ TAKE_TEN
+	lia X; load rgA rgA; lib 10; sub                             # A = X - 10
+	jmp carry; TOOK_TEN                                          # X >= 10
+	lia X; load rgA rgA; lib P; load rgB rgB; store rgA rgB      # memory[P] = X, now a single digit
+	lia P; load rgA rgA; lib FIRST_CELL; load rgB rgB            # A = P, B = the address of the first cell
+	jmp eq; END_OF_PROGRAM                                       # the first cell is done
+	lib 1; sub; lib P; store rgA rgB                             # P = P - 1
+	jmp; NEXT_CELL
+@ TOOK_TEN
+	lib X; store rgA rgB                                         # X = X - 10   (A still holds the difference)
+	lia CARRY; load rgA rgA; lib 1; sum; lib CARRY; store rgA rgB# CARRY = CARRY + 1
+	jmp; TAKE_TEN
+
+# The word 0 stops the CPU on its Breakpoint.
+@ END_OF_PROGRAM
+	non
+
+# ---- The input: 4 banks ----
+# One word per battery; a 0 ends each bank; one more 0 ends the input.
+origin 0x2000
+# bank 1: 987654321111111   (its best twelve: 987654321111)
+9; 8; 7; 6; 5; 4; 3; 2; 1; 1; 1; 1; 1; 1; 1; 0
+# bank 2: 811111111111119   (its best twelve: 811111111119)
+8; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 9; 0
+# bank 3: 234234234234278   (its best twelve: 434234234278)
+2; 3; 4; 2; 3; 4; 2; 3; 4; 2; 3; 4; 2; 7; 8; 0
+# bank 4: 818181911112111   (its best twelve: 888911112111)
+8; 1; 8; 1; 8; 1; 9; 1; 1; 1; 1; 2; 1; 1; 1; 0
+0
