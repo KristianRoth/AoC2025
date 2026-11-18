@@ -11,10 +11,11 @@ The CPU's board files for the Steam game Virtual Circuit Board (Update 1.0.1), a
 | `days/day3/cpu-32bit-autorun-aoc3p1.vcb` | The same for `days/day3/part1.vcbasm`; Persistent Memory `0x0100`–`0x0114`. |
 | `days/day3/cpu-32bit-autorun-aoc3p2.vcb` | The same for `days/day3/part2.vcbasm`; Persistent Memory `0x0110`–`0x011E`. |
 | `days/day4/cpu-32bit-autorun-aoc4p1.vcb` | The same for `days/day4/part1.vcbasm`; Persistent Memory `0x0100`–`0x0114`. |
+| `days/day4/cpu-32bit-autorun-aoc4p2.vcb` | The same for `days/day4/part2.vcbasm`; Persistent Memory `0x0100`–`0x0114`. |
 
 The boards differ only in those 24 latch pixels, in the assembly text they carry, and in the Persistent Memory range.
 
-All seven carry two fixes that bring instruction bits to the ALU: the shift fix of 2026-11-17 (50 pixels near x 1120–1129, y 215–224; `shf | n` shifts A left by n) and the xor and neg fix of 2026-11-18 (24 pixels just right of it; `xor` and `neg` work). The fixes and how they were found are in [`findings/cpu-instructions.md`](findings/cpu-instructions.md).
+All eight carry two fixes that bring instruction bits to the ALU: the shift fix of 2026-11-17 (50 pixels near x 1120–1129, y 215–224; `shf | n` shifts A left by n) and the xor and neg fix of 2026-11-18 (24 pixels just right of it; `xor` and `neg` work). The fixes and how they were found are in [`findings/cpu-instructions.md`](findings/cpu-instructions.md).
 
 These boards run in the game, and in the `vcb` engine of the VirtualCircuitBoardCPU repository, which reproduces the game tick for tick. That engine's fixture `engine/tests/boards/cpu-aoc1p1.vcb` is the autorun board with the program already assembled into its memory by the game; its README explains how to run a program.
 
@@ -38,6 +39,8 @@ The rules the puzzles are solved under are in [`RULES.md`](RULES.md).
 | `days/day3/part2-example.vcbasm` | The same program with the puzzle's example as input (answer 3121910778619) |
 | `days/day4/part1.vcbasm` | Advent of Code day 4, part 1. The header says where the answer is left |
 | `days/day4/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 13) |
+| `days/day4/part2.vcbasm` | Advent of Code day 4, part 2. The header says where the answer is left |
+| `days/day4/part2-example.vcbasm` | The same program with the puzzle's example as input (answer 43) |
 
 ## How a solution is written
 
@@ -69,6 +72,8 @@ Measured in the `vcb` engine on `cpu-32bit-autorun-aoc1p1.vcb`, to the Breakpoin
 | Day 3 part 2 | 168617068915447 | 419,669,712 | 65.0 s | 1,639,000 | 20,406 words |
 | Day 4 part 1, example | 13 | 2,877,648 | 0.5 s | 11,000 | 316 words |
 | Day 4 part 1 | 1505 | 481,327,888 | 91 s | 1,880,000 | 19,388 words |
+| Day 4 part 2, example | 43 | 6,508,752 | 1.5 s | 25,000 | 425 words |
+| Day 4 part 2 | 9182 | 1,339,421,264 | 4.6 min | 5,232,000 | 19,497 words |
 
 "Instructions run" is the tick count divided by 256, the cost of most instructions:
 
@@ -96,12 +101,15 @@ Notes on the day 3 solutions:
 - **Part 2 never builds a big number.** The chosen digits are added column by column into the 15 result cells, and one round of carrying at the end turns the column sums into the decimal answer. So a 15-digit sum needs only 16-bit arithmetic, and the result exists in decimal only.
 - **Part 2's size:** 172 instructions.
 
-Notes on the day 4 solution:
+Notes on the day 4 solutions:
 
 - **Adding in place of counting.** An empty cell is stored as 1 and a roll as 16, so the sum of the nine words around a roll tells how many neighbours are rolls: below 80 means fewer than four. No neighbour is tested one by one.
 - **No edge cases.** Each row ends in a 0 and the rows lie back to back, so a cell beyond the grid's edge is always a 0 and adds nothing.
 - **Where the time goes.** 12,318 of the 19,044 cells hold a roll, and each roll costs about 145 instructions: nine cells read through a pointer and added to a sum kept in memory. An empty cell costs about 14.
-- **Size:** 169 instructions; the rest of the 19,388 words is the grid, one word per cell.
+- **Size:** part 1 has 169 instructions; the rest of the 19,388 words is the grid, one word per cell.
+- **Part 2 walks the grid once.** A roll is removed the moment it is found removable, and only its neighbours that the walk has already passed are put on a to-do stack and looked at again. That is 21,385 looks at a roll; sweeping the whole grid until nothing changes would take 49 sweeps and 195,394 looks. The stack never held more than 103 addresses.
+- **Part 2 is the longest run so far** (4.6 minutes in the engine): each look still costs about 145 instructions, and each of the 9,182 removals another 170 or so to test and note its eight neighbours.
+- **Part 2's size:** 263 instructions.
 
 ## Instruction set
 
