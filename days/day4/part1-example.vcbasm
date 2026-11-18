@@ -56,13 +56,13 @@
 # ONE WORD IS ENOUGH
 # Every value here fits in 16 bits, so each variable is one memory word. The idioms used everywhere
 # (v is a variable's address, below 0x1000):
-#     lia v; load rgA rgA      A = the word at v   (lia puts the address in A, load replaces it)
-#     lib v; load rgB rgB      B = the word at v
-#     lib v; store rgA rgB     the word at v = A   (this uses up B)
-#     jmp eq / jmp neq         compares A with B as they are now
-#     sub; jmp nega            after A - B: taken when A < B
+#     getA v                   A = the word at v   (lia v; load rgA rgA: lia puts the address in A, load replaces it)
+#     getB v                   B = the word at v
+#     putA v                   the word at v = A   (this uses up B)
+#     if_eq L / if_neq L       compares A with B as they are now
+#     sub; if_nega L           after A - B: taken when A < B
 # P and ROW are pointers: variables that hold an address in the grid. Reading the cell a pointer points
-# at is one more load:  lia P; load rgA rgA; load rgA rgA   (first A = P, then A = the word at P).
+# at is one more load:  getAat P   (first A = P, then A = the word at P).
 # What each instruction does exactly is in findings/cpu-instructions.md.
 #
 # MEMORY MAP
@@ -80,6 +80,20 @@ symbol sto 0b0101_0000_0000_0000
 
 macro  load  { ld  | a? | (b? >> 6) }
 macro  store { sto | a? | (b? >> 6) }
+
+# ---- Macros for the common operations (the README explains them; a macro cannot use load or store,
+#      so the bodies spell those out). v: a variable, p: a variable holding an address, L: a label ----
+macro getA     { lia a?; ld | rgA | (rgA >> 6) }                                                  # getA v: A = v
+macro getB     { lib a?; ld | rgB | (rgB >> 6) }                                                  # getB v: B = v
+macro putA     { lib a?; sto | rgA | (rgB >> 6) }                                                 # putA v: v = A (B is used up)
+macro getAat   { lia a?; ld | rgA | (rgA >> 6); ld | rgA | (rgA >> 6) }                           # getAat p: A = the word p points at
+macro putAat   { lib a?; ld | rgB | (rgB >> 6); sto | rgA | (rgB >> 6) }                          # putAat p: the word p points at = A (B is used up)
+macro inc      { lia a?; ld | rgA | (rgA >> 6); lib 1; sum; lib a?; sto | rgA | (rgB >> 6) }      # inc v: v = v + 1 (A and B are used up)
+macro goto     { jmp; a? }                                                                        # goto L: jump to L
+macro if_eq    { jmp eq; a? }                                                                     # if_eq L: jump to L when A == B
+macro do       { call; a? }                                                                       # do L: call the subroutine L
+macro if_carry { jmp carry; a? }                                                                  # if_carry L: jump to L when the last sum or sub set the carry
+macro if_nega  { jmp nega; a? }                                                                   # if_nega L: jump to L when the last sub went below 0
 
 symbol sum    0b0110_0100_0000_0000
 symbol sum_32 0b0110_1100_0000_0000
@@ -138,7 +152,7 @@ pointer GRID 0x0129 0x2000
 
 # ---- The CPU starts at 0xFF00 ----
 origin 0xFF00
-jmp; MAIN
+goto MAIN
 
 origin 0x1000
 @ MAIN
@@ -147,30 +161,30 @@ origin 0x1000
 #     while memory[ROW] != 0: ROW = ROW + 1     # ROW is free for this; it walks along the first row
 #     STRIDE = ROW - GRID + 1
 @ FIND_WIDTH
-	lia GRID; load rgA rgA; lib ROW; store rgA rgB               # ROW = the address of the grid
+	getA GRID; putA ROW                                          # ROW = the address of the grid
 @ FIND_WIDTH_NEXT
-	lia ROW; load rgA rgA; load rgA rgA                          # A = memory[ROW]
+	getAat ROW                                                   # A = memory[ROW]
 	lib 0                                                        # B = 0, to compare with
-	jmp eq; WIDTH_FOUND                                          # the 0 that ends the first row
-	lia ROW; load rgA rgA; lib 1; sum; lib ROW; store rgA rgB    # ROW = ROW + 1
-	jmp; FIND_WIDTH_NEXT
+	if_eq WIDTH_FOUND                                            # the 0 that ends the first row
+	inc ROW                                                      # ROW = ROW + 1
+	goto FIND_WIDTH_NEXT
 @ WIDTH_FOUND
-	lia ROW; load rgA rgA; lib GRID; load rgB rgB; sub           # A = ROW - GRID, the width
-	lib 1; sum; lib STRIDE; store rgA rgB                        # STRIDE = width + 1
+	getA ROW; getB GRID; sub                                     # A = ROW - GRID, the width
+	lib 1; sum; putA STRIDE                                      # STRIDE = width + 1
 
 # ==== look at the next cell ====
 #     if memory[P] == 0: goto END_OF_ROW
 #     if memory[P] == 16: goto ROLL
 #     P = P + 1                                 # an empty cell
 @ NEXT_CELL
-	lia P; load rgA rgA; load rgA rgA                            # A = memory[P]
+	getAat P                                                     # A = memory[P]
 	lib 0                                                        # B = 0
-	jmp eq; END_OF_ROW
+	if_eq END_OF_ROW
 	lib 16                                                       # B = 16, a roll
-	jmp eq; ROLL
+	if_eq ROLL
 @ STEP_ON
-	lia P; load rgA rgA; lib 1; sum; lib P; store rgA rgB        # P = P + 1
-	jmp; NEXT_CELL
+	inc P                                                        # P = P + 1
+	goto NEXT_CELL
 
 # ==== a roll: add up its 3 x 3 block ====
 #     SUM = 0
@@ -179,32 +193,32 @@ origin 0x1000
 #     ROW = P + STRIDE - 1; ADD_THREE           # the row below
 #     if SUM < 80: COUNT = COUNT + 1
 @ ROLL
-	lia 0; lib SUM; store rgA rgB                                # SUM = 0
-	lia P; load rgA rgA; lib STRIDE; load rgB rgB; sub           # A = P - STRIDE
-	lib 1; sub; lib ROW; store rgA rgB                           # ROW = P - STRIDE - 1
-	call; ADD_THREE
-	lia P; load rgA rgA; lib 1; sub; lib ROW; store rgA rgB      # ROW = P - 1
-	call; ADD_THREE
-	lia P; load rgA rgA; lib STRIDE; load rgB rgB; sum           # A = P + STRIDE
-	lib 1; sub; lib ROW; store rgA rgB                           # ROW = P + STRIDE - 1
-	call; ADD_THREE
+	lia 0; putA SUM                                              # SUM = 0
+	getA P; getB STRIDE; sub                                     # A = P - STRIDE
+	lib 1; sub; putA ROW                                         # ROW = P - STRIDE - 1
+	do ADD_THREE
+	getA P; lib 1; sub; putA ROW                                 # ROW = P - 1
+	do ADD_THREE
+	getA P; getB STRIDE; sum                                     # A = P + STRIDE
+	lib 1; sub; putA ROW                                         # ROW = P + STRIDE - 1
+	do ADD_THREE
 	# fewer than four neighbouring rolls <=> SUM < 80
-	lia SUM; load rgA rgA; lib 80; sub                           # A - B is negative when SUM < 80
-	jmp nega; REACHABLE
-	jmp; STEP_ON                                                 # four or more neighbours
+	getA SUM; lib 80; sub                                        # A - B is negative when SUM < 80
+	if_nega REACHABLE
+	goto STEP_ON                                                 # four or more neighbours
 @ REACHABLE
-	lia COUNT; load rgA rgA; lib 1; sum; lib COUNT; store rgA rgB# COUNT = COUNT + 1
-	jmp; STEP_ON
+	inc COUNT                                                    # COUNT = COUNT + 1
+	goto STEP_ON
 
 # ==== the end of a row ====
 #     P = P + 1                                 # step over the 0
 #     if memory[P] == 0: goto ALL_ROWS_DONE     # a second 0: the end of the grid
 @ END_OF_ROW
-	lia P; load rgA rgA; lib 1; sum; lib P; store rgA rgB        # P = P + 1
+	inc P                                                        # P = P + 1
 	load rgA rgA                                                 # A = memory[P]   (A still held P)
 	lib 0                                                        # B = 0
-	jmp eq; ALL_ROWS_DONE
-	jmp; NEXT_CELL
+	if_eq ALL_ROWS_DONE
+	goto NEXT_CELL
 
 # ==== write COUNT as five decimal digits ====
 # A digit is how often a power of ten fits into what is left. Without division that is counting:
@@ -215,25 +229,25 @@ origin 0x1000
 #         memory[DIGIT] = DIGIT_VALUE; DIGIT = DIGIT + 1
 # After sub, the carry flag is set when A >= B (no borrow).
 @ ALL_ROWS_DONE
-	lia COUNT; load rgA rgA; lib REST; store rgA rgB             # REST = COUNT
+	getA COUNT; putA REST                                        # REST = COUNT
 @ NEXT_POWER
-	lia POW; load rgA rgA; load rgA rgA                          # A = memory[POW], the next power of ten
-	lib POWER; store rgA rgB                                     # POWER = A
+	getAat POW                                                   # A = memory[POW], the next power of ten
+	putA POWER                                                   # POWER = A
 	lib 0                                                        # B = 0
-	jmp eq; END                                                  # a power of 0 ends the table
-	lia POW; load rgA rgA; lib 1; sum; lib POW; store rgA rgB    # POW = POW + 1
-	lia 0; lib DIGIT_VALUE; store rgA rgB                        # DIGIT_VALUE = 0
+	if_eq END                                                    # a power of 0 ends the table
+	inc POW                                                      # POW = POW + 1
+	lia 0; putA DIGIT_VALUE                                      # DIGIT_VALUE = 0
 @ FITS_AGAIN
-	lia REST; load rgA rgA; lib POWER; load rgB rgB              # A = REST, B = POWER
+	getA REST; getB POWER                                        # A = REST, B = POWER
 	sub                                                          # A = REST - POWER
-	jmp carry; FITS                                              # REST >= POWER: it fits once more
-	lia DIGIT_VALUE; load rgA rgA; lib DIGIT; load rgB rgB; store rgA rgB# memory[DIGIT] = DIGIT_VALUE   (B holds the address in DIGIT)
-	lia DIGIT; load rgA rgA; lib 1; sum; lib DIGIT; store rgA rgB# DIGIT = DIGIT + 1
-	jmp; NEXT_POWER
+	if_carry FITS                                                # REST >= POWER: it fits once more
+	getA DIGIT_VALUE; putAat DIGIT                                       # memory[DIGIT] = DIGIT_VALUE   (B holds the address in DIGIT)
+	inc DIGIT                                                    # DIGIT = DIGIT + 1
+	goto NEXT_POWER
 @ FITS
-	lib REST; store rgA rgB                                      # REST = REST - POWER   (A still holds the difference)
-	lia DIGIT_VALUE; load rgA rgA; lib 1; sum; lib DIGIT_VALUE; store rgA rgB# DIGIT_VALUE = DIGIT_VALUE + 1
-	jmp; FITS_AGAIN
+	putA REST                                                    # REST = REST - POWER   (A still holds the difference)
+	inc DIGIT_VALUE                                                          # DIGIT_VALUE = DIGIT_VALUE + 1
+	goto FITS_AGAIN
 
 # The word 0 stops the CPU on its Breakpoint.
 @ END
@@ -245,12 +259,12 @@ origin 0x1800
 #     SUM = SUM + memory[ROW] + memory[ROW + 1] + memory[ROW + 2]
 # The address is worked out in A, then load rgA rgA replaces it by the cell it points at.
 @ ADD_THREE
-	lia ROW; load rgA rgA; load rgA rgA                          # A = memory[ROW]
-	lib SUM; load rgB rgB; sum; lib SUM; store rgA rgB           # SUM = SUM + A
-	lia ROW; load rgA rgA; lib 1; sum; load rgA rgA              # A = memory[ROW + 1]
-	lib SUM; load rgB rgB; sum; lib SUM; store rgA rgB           # SUM = SUM + A
-	lia ROW; load rgA rgA; lib 2; sum; load rgA rgA              # A = memory[ROW + 2]
-	lib SUM; load rgB rgB; sum; lib SUM; store rgA rgB           # SUM = SUM + A
+	getAat ROW                                                   # A = memory[ROW]
+	getB SUM; sum; putA SUM                                      # SUM = SUM + A
+	getA ROW; lib 1; sum; load rgA rgA                           # A = memory[ROW + 1]
+	getB SUM; sum; putA SUM                                      # SUM = SUM + A
+	getA ROW; lib 2; sum; load rgA rgA                           # A = memory[ROW + 2]
+	getB SUM; sum; putA SUM                                      # SUM = SUM + A
 	ret
 
 # ---- Powers of ten for the decimal digits, then 0 ----

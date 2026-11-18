@@ -57,12 +57,12 @@
 # ONE WORD IS ENOUGH
 # Every value here fits in 16 bits, so each variable is one memory word, and the 32-bit registers never
 # carry. The two idioms used everywhere (v is a variable's address, below 0x1000):
-#     lia v; load rgA rgA      A = the word at v   (lia puts the address in A, load replaces it)
-#     lib v; load rgB rgB      B = the word at v
-#     lib v; store rgA rgB     the word at v = A   (this uses up B)
+#     getA v                   A = the word at v   (lia v; load rgA rgA: lia puts the address in A, load replaces it)
+#     getB v                   B = the word at v
+#     putA v                   the word at v = A   (this uses up B)
 # and the two comparisons:
-#     jmp eq / jmp neq         compares A with B as they are now
-#     sub; jmp nega            after A - B: taken when A < B
+#     if_eq L / if_neq L       compares A with B as they are now
+#     sub; if_nega L           after A - B: taken when A < B
 # What each instruction does exactly is in findings/cpu-instructions.md.
 #
 # MEMORY MAP
@@ -80,6 +80,20 @@ symbol sto 0b0101_0000_0000_0000
 
 macro  load  { ld  | a? | (b? >> 6) }
 macro  store { sto | a? | (b? >> 6) }
+
+# ---- Macros for the common operations (the README explains them; a macro cannot use load or store,
+#      so the bodies spell those out). v: a variable, p: a variable holding an address, L: a label ----
+macro getA     { lia a?; ld | rgA | (rgA >> 6) }                                                  # getA v: A = v
+macro getB     { lib a?; ld | rgB | (rgB >> 6) }                                                  # getB v: B = v
+macro putA     { lib a?; sto | rgA | (rgB >> 6) }                                                 # putA v: v = A (B is used up)
+macro putAat   { lib a?; ld | rgB | (rgB >> 6); sto | rgA | (rgB >> 6) }                          # putAat p: the word p points at = A (B is used up)
+macro inc      { lia a?; ld | rgA | (rgA >> 6); lib 1; sum; lib a?; sto | rgA | (rgB >> 6) }      # inc v: v = v + 1 (A and B are used up)
+macro copyAB   { psh rgA; pop rgB }                                                               # copyAB: B = A (lower half)
+macro goto     { jmp; a? }                                                                        # goto L: jump to L
+macro if_eq    { jmp eq; a? }                                                                     # if_eq L: jump to L when A == B
+macro if_neq   { jmp neq; a? }                                                                    # if_neq L: jump to L when A != B
+macro if_carry { jmp carry; a? }                                                                  # if_carry L: jump to L when the last sum or sub set the carry
+macro if_nega  { jmp nega; a? }                                                                   # if_nega L: jump to L when the last sub went below 0
 
 symbol sum    0b0110_0100_0000_0000
 symbol sum_32 0b0110_1100_0000_0000
@@ -137,7 +151,7 @@ pointer POW 0x0128 0x1F00
 
 # ---- The CPU starts at 0xFF00 ----
 origin 0xFF00
-jmp; MAIN
+goto MAIN
 
 origin 0x1000
 @ MAIN
@@ -148,38 +162,38 @@ origin 0x1000
 # address into B, then the word at that address into A. lia 0 first clears A's upper half, because
 # load only replaces the lower half.
 @ NEXT_DIGIT
-	lia 0; lib IN; load rgB rgB; load rgA rgB                    # A = input[IN]
-	lib D; store rgA rgB                                         # D = A
+	lia 0; getB IN; load rgA rgB                                 # A = input[IN]
+	putA D                                                       # D = A
 	lib 0                                                        # B = 0, to compare with
-	jmp eq; END_OF_BANK                                          # D == 0: the bank is finished
-	lia IN; load rgA rgA; lib 1; sum; lib IN; store rgA rgB      # IN = IN + 1
+	if_eq END_OF_BANK                                            # D == 0: the bank is finished
+	inc IN                                                       # IN = IN + 1
 
 # ==== is the pair (MAX, D) better than (TENS, UNITS)? ====
 #     if MAX != TENS: TENS = MAX; UNITS = D      # MAX > TENS: a larger first digit wins
 #     else if D > UNITS: UNITS = D               # the same first digit: the larger second digit wins
-	lia MAX; load rgA rgA; lib TENS; load rgB rgB                # A = MAX, B = TENS
-	jmp neq; NEW_PAIR                                            # MAX != TENS, so MAX > TENS
+	getA MAX; getB TENS                                          # A = MAX, B = TENS
+	if_neq NEW_PAIR                                              # MAX != TENS, so MAX > TENS
 	# MAX == TENS: compare the second digits
-	lia UNITS; load rgA rgA; lib D; load rgB rgB                 # A = UNITS, B = D
+	getA UNITS; getB D                                           # A = UNITS, B = D
 	sub                                                          # A - B is negative when UNITS < D
-	jmp nega; NEW_UNITS                                          # D > UNITS
-	jmp; UPDATE_MAX                                              # the old pair stays
+	if_nega NEW_UNITS                                            # D > UNITS
+	goto UPDATE_MAX                                              # the old pair stays
 @ NEW_PAIR
-	lia MAX; load rgA rgA; lib TENS; store rgA rgB               # TENS = MAX
+	getA MAX; putA TENS                                          # TENS = MAX
 @ NEW_UNITS
-	lia D; load rgA rgA; lib UNITS; store rgA rgB                # UNITS = D
+	getA D; putA UNITS                                           # UNITS = D
 
 # ==== remember the largest digit ====
 #     if D > MAX: MAX = D
 # This comes after the pair test, so that D is never paired with itself.
 @ UPDATE_MAX
-	lia MAX; load rgA rgA; lib D; load rgB rgB                   # A = MAX, B = D
+	getA MAX; getB D                                             # A = MAX, B = D
 	sub                                                          # A - B is negative when MAX < D
-	jmp nega; NEW_MAX                                            # D > MAX
-	jmp; NEXT_DIGIT                                              #
+	if_nega NEW_MAX                                              # D > MAX
+	goto NEXT_DIGIT                                              #
 @ NEW_MAX
-	lia D; load rgA rgA; lib MAX; store rgA rgB                  # MAX = D
-	jmp; NEXT_DIGIT                                              #
+	getA D; putA MAX                                             # MAX = D
+	goto NEXT_DIGIT                                              #
 
 # ==== the end of a bank ====
 #     if MAX == 0: goto ALL_BANKS_DONE           # no digit was read: this 0 ends the input
@@ -188,33 +202,33 @@ origin 0x1000
 #     MAX = 0; TENS = 0; UNITS = 0
 #     IN = IN + 1                                # step over the 0
 @ END_OF_BANK
-	lia MAX; load rgA rgA; lib 0                                 # A = MAX, B = 0
-	jmp eq; ALL_BANKS_DONE                                       # an empty bank: the input is finished
-	lia SUM_TENS; load rgA rgA; lib TENS; load rgB rgB; sum      # A = SUM_TENS + TENS
-	lib SUM_TENS; store rgA rgB                                  # SUM_TENS = A
-	lia SUM; load rgA rgA; lib UNITS; load rgB rgB; sum          # A = SUM + UNITS
-	lib SUM; store rgA rgB                                       # SUM = A
-	lia 0; lib MAX; store rgA rgB; lib TENS; store rgA rgB       # MAX = 0; TENS = 0
-	lib UNITS; store rgA rgB                                     # UNITS = 0
-	lia IN; load rgA rgA; lib 1; sum; lib IN; store rgA rgB      # IN = IN + 1
-	jmp; NEXT_DIGIT                                              #
+	getA MAX; lib 0                                              # A = MAX, B = 0
+	if_eq ALL_BANKS_DONE                                         # an empty bank: the input is finished
+	getA SUM_TENS; getB TENS; sum                                # A = SUM_TENS + TENS
+	putA SUM_TENS                                                # SUM_TENS = A
+	getA SUM; getB UNITS; sum                                    # A = SUM + UNITS
+	putA SUM                                                     # SUM = A
+	lia 0; putA MAX; putA TENS                                   # MAX = 0; TENS = 0
+	putA UNITS                                                   # UNITS = 0
+	inc IN                                                       # IN = IN + 1
+	goto NEXT_DIGIT                                              #
 
 # ==== SUM = SUM + 10 * SUM_TENS ====
-# Doubling is A + A. psh rgA; pop rgB copies A into B (B's upper half is 0 after the lib before it).
+# Doubling is A + A. copyAB (psh rgA; pop rgB) copies A into B (B's upper half is 0 after the lib before it).
 #     A = SUM_TENS
 #     A = A + A                                  # 2 * SUM_TENS
 #     SUM = SUM + A
 #     A = A + A; A = A + A                       # 8 * SUM_TENS
 #     SUM = SUM + A
 @ ALL_BANKS_DONE
-	lia SUM_TENS; load rgA rgA; lib 0                            # A = SUM_TENS; B = 0 clears B's upper half
-	psh rgA; pop rgB; sum                                        # A = 2 * SUM_TENS
-	lib SUM_TENS; store rgA rgB                                  # SUM_TENS = 2 * SUM_TENS (kept for the next step)
-	lib SUM; load rgB rgB; sum; lib SUM; store rgA rgB           # SUM = SUM + 2 * SUM_TENS
-	lia SUM_TENS; load rgA rgA; lib 0                            # A = 2 * SUM_TENS
-	psh rgA; pop rgB; sum                                        # A = 4 * SUM_TENS
-	psh rgA; pop rgB; sum                                        # A = 8 * SUM_TENS
-	lib SUM; load rgB rgB; sum; lib SUM; store rgA rgB           # SUM = SUM + 8 * SUM_TENS
+	getA SUM_TENS; lib 0                                         # A = SUM_TENS; B = 0 clears B's upper half
+	copyAB; sum                                                  # A = 2 * SUM_TENS
+	putA SUM_TENS                                                # SUM_TENS = 2 * SUM_TENS (kept for the next step)
+	getB SUM; sum; putA SUM                                      # SUM = SUM + 2 * SUM_TENS
+	getA SUM_TENS; lib 0                                         # A = 2 * SUM_TENS
+	copyAB; sum                                                  # A = 4 * SUM_TENS
+	copyAB; sum                                                  # A = 8 * SUM_TENS
+	getB SUM; sum; putA SUM                                      # SUM = SUM + 8 * SUM_TENS
 
 # ==== write SUM as five decimal digits ====
 # A digit is how often a power of ten fits into what is left. Without division that is counting:
@@ -224,25 +238,25 @@ origin 0x1000
 #         while D >= POWER: D = D - POWER; COUNT = COUNT + 1
 #         memory[DIGIT] = COUNT; DIGIT = DIGIT + 1
 # After sub, the carry flag is set when A >= B (no borrow).
-	lia SUM; load rgA rgA; lib D; store rgA rgB                  # D = SUM
+	getA SUM; putA D                                             # D = SUM
 @ NEXT_POWER
-	lia 0; lib POW; load rgB rgB; load rgA rgB                   # A = powers[POW]
-	lib POWER; store rgA rgB                                     # POWER = A
+	lia 0; getB POW; load rgA rgB                                # A = powers[POW]
+	putA POWER                                                   # POWER = A
 	lib 0                                                        # B = 0
-	jmp eq; END                                                  # a power of 0 ends the table
-	lia POW; load rgA rgA; lib 1; sum; lib POW; store rgA rgB    # POW = POW + 1
-	lia 0; lib COUNT; store rgA rgB                              # COUNT = 0
+	if_eq END                                                    # a power of 0 ends the table
+	inc POW                                                      # POW = POW + 1
+	lia 0; putA COUNT                                            # COUNT = 0
 @ COUNT_AGAIN
-	lia D; load rgA rgA; lib POWER; load rgB rgB                 # A = D, B = POWER
+	getA D; getB POWER                                           # A = D, B = POWER
 	sub                                                          # A = D - POWER
-	jmp carry; COUNT_ONE                                         # D >= POWER: it fits once more
-	lia COUNT; load rgA rgA; lib DIGIT; load rgB rgB; store rgA rgB# memory[DIGIT] = COUNT   (B holds the address in DIGIT)
-	lia DIGIT; load rgA rgA; lib 1; sum; lib DIGIT; store rgA rgB# DIGIT = DIGIT + 1
-	jmp; NEXT_POWER                                              #
+	if_carry COUNT_ONE                                           # D >= POWER: it fits once more
+	getA COUNT; putAat DIGIT                                       # memory[DIGIT] = COUNT   (B holds the address in DIGIT)
+	inc DIGIT                                                    # DIGIT = DIGIT + 1
+	goto NEXT_POWER                                              #
 @ COUNT_ONE
-	lib D; store rgA rgB                                         # D = D - POWER   (A still holds the difference)
-	lia COUNT; load rgA rgA; lib 1; sum; lib COUNT; store rgA rgB# COUNT = COUNT + 1
-	jmp; COUNT_AGAIN                                             #
+	putA D                                                       # D = D - POWER   (A still holds the difference)
+	inc COUNT                                                    # COUNT = COUNT + 1
+	goto COUNT_AGAIN                                             #
 
 # The word 0 stops the CPU on its Breakpoint.
 @ END
