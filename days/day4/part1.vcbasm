@@ -71,65 +71,60 @@
 #   0x1800-        the subroutine       0x2000-  the grid (138 rows of 138 end at 0x6AEE)
 #   0xFF00         where the CPU starts
 
-# ---- The CPU's instructions as symbols (the same table as in day 1) ----
-symbol nop 0b0000_0000_0000_0000
-symbol ld  0b0010_0000_0000_0000
-symbol lia 0b0011_0000_0000_0000
-symbol lib 0b0100_0000_0000_0000
-symbol sto 0b0101_0000_0000_0000
+# ---- The CPU's instructions as symbols (day 1's table without its _32 names, which the CPU ignores) ----
+symbol nop 0b0000_0000_0000_0000            # the word 0: stops the CPU (the same word as non)
+symbol ld  0b0010_0000_0000_0000            # load a register from memory (used through the load macro)
+symbol lia 0b0011_0000_0000_0000            # lia n: A = n (0 to 4095), upper half 0
+symbol lib 0b0100_0000_0000_0000            # lib n: B = n (0 to 4095), upper half 0
+symbol sto 0b0101_0000_0000_0000            # store a register to memory (used through the store macro)
 
-macro  load  { ld  | a? | (b? >> 6) }
-macro  store { sto | a? | (b? >> 6) }
+macro  load  { ld  | a? | (b? >> 6) }       # load X Y: X = the word at the address in Y
+macro  store { sto | a? | (b? >> 6) }       # store X Y: the word at the address in Y = X
 
-# ---- Macros for the common operations (the README explains them; a macro cannot use load or store,
-#      so the bodies spell those out). v: a variable, p: a variable holding an address, L: a label ----
-macro getA     { lia a?; ld | rgA | (rgA >> 6) }                                                  # getA v: A = v
-macro getB     { lib a?; ld | rgB | (rgB >> 6) }                                                  # getB v: B = v
-macro putA     { lib a?; sto | rgA | (rgB >> 6) }                                                 # putA v: v = A (B is used up)
-macro getAat   { lia a?; ld | rgA | (rgA >> 6); ld | rgA | (rgA >> 6) }                           # getAat p: A = the word p points at
-macro putAat   { lib a?; ld | rgB | (rgB >> 6); sto | rgA | (rgB >> 6) }                          # putAat p: the word p points at = A (B is used up)
-macro inc      { lia a?; ld | rgA | (rgA >> 6); lib 1; sum; lib a?; sto | rgA | (rgB >> 6) }      # inc v: v = v + 1 (A and B are used up)
-macro goto     { jmp; a? }                                                                        # goto L: jump to L
-macro if_eq    { jmp eq; a? }                                                                     # if_eq L: jump to L when A == B
-macro do       { call; a? }                                                                       # do L: call the subroutine L
-macro if_carry { jmp carry; a? }                                                                  # if_carry L: jump to L when the last sum or sub set the carry
-macro if_nega  { jmp nega; a? }                                                                   # if_nega L: jump to L when the last sub went below 0
+symbol sum    0b0110_0100_0000_0000         # A = A + B (32 bits), sets zero, carry, nega
+symbol sub    0b0110_0010_0000_0000         # A = A - B (32 bits), sets zero, carry, nega
+symbol shf    0b0110_0001_0000_0000         # shf | k: A = A shifted left by k (0 to 15)
+symbol and    0b0110_0000_1000_0000         # A = A and B
+symbol or     0b0110_0000_0100_0000         # A = A or B
+symbol xor    0b0110_0000_0010_0000         # A = A xor B
+symbol neg    0b0110_0000_0001_0000         # A = every bit of A flipped
 
-symbol sum    0b0110_0100_0000_0000
-symbol sum_32 0b0110_1100_0000_0000
-symbol sub    0b0110_0010_0000_0000
-symbol sub_32 0b0110_1010_0000_0000
-symbol shf    0b0110_0001_0000_0000
-symbol shf_32 0b0110_1001_0000_0000
-symbol and    0b0110_0000_1000_0000
-symbol and_32 0b0110_1000_1000_0000
-symbol or     0b0110_0000_0100_0000
-symbol or_32  0b0110_1000_0100_0000
-symbol xor    0b0110_0000_0010_0000
-symbol xor_32 0b0110_1000_0010_0000
-symbol neg    0b0110_0000_0001_0000
-symbol neg_32 0b0110_1000_0001_0000
+symbol psh 0b1010_0000_0000_0000            # psh X: push the 16 bits of X
+symbol pop 0b1011_0000_0000_0000            # pop X: pop 16 bits into X
 
-symbol psh 0b1010_0000_0000_0000
-symbol pop 0b1011_0000_0000_0000
+symbol jmp  0b1100_0000_0000_0000           # jmp; L: go to L.  jmp c; L: go to L when c holds
+symbol call 0b1110_0000_0000_0000           # call; L: run the subroutine at L
+symbol ret  0b1111_0000_0000_0000           # return from a subroutine
 
-symbol jmp  0b1100_0000_0000_0000
-symbol call 0b1110_0000_0000_0000
-symbol ret  0b1111_0000_0000_0000
+# The registers, as load, store, psh and pop name them
+symbol rgAH 0b1000_0000_0000                # the upper 16 bits of A
+symbol rgA  0b0100_0000_0000                # the lower 16 bits of A
+symbol rgBH 0b0010_0000_0000                # the upper 16 bits of B
+symbol rgB  0b0001_0000_0000                # the lower 16 bits of B
+symbol rgSP 0b0000_1000_0000                # the program counter (leave alone)
+symbol rgSB 0b0000_0100_0000                # the stack pointer (leave alone)
+symbol non  0                               # stops the CPU (Breakpoint): the end of the program
 
-symbol rgAH 0b1000_0000_0000
-symbol rgA  0b0100_0000_0000
-symbol rgBH 0b0010_0000_0000
-symbol rgB  0b0001_0000_0000
-symbol rgSP 0b0000_1000_0000
-symbol rgSB 0b0000_0100_0000
-symbol non  0
+# The conditions of jmp
+symbol zero  0b1000_0000_0000               # the last sum or sub gave 0
+symbol carry 0b0100_0000_0000               # the last sum carried, or the last sub did not borrow (A >= B)
+symbol nega  0b0010_0000_0000               # the last sub went below 0 (A < B)
+symbol eq    0b0001_0000_0000               # A == B right now
+symbol neq   0b0000_1000_0000               # A != B right now
 
-symbol zero  0b1000_0000_0000
-symbol carry 0b0100_0000_0000
-symbol nega  0b0010_0000_0000
-symbol eq    0b0001_0000_0000
-symbol neq   0b0000_1000_0000
+# ---- Macros for the common operations (explained in the README). A macro cannot use another macro, so
+#      load and store are spelled out here. v: a variable, p: a variable holding an address, L: a label ----
+macro getA     { lia a?; ld | rgA | (rgA >> 6) }                                              # A = v
+macro getB     { lib a?; ld | rgB | (rgB >> 6) }                                              # B = v
+macro putA     { lib a?; sto | rgA | (rgB >> 6) }                                             # v = A (uses B)
+macro getAat   { lia a?; ld | rgA | (rgA >> 6); ld | rgA | (rgA >> 6) }                       # A = the word p points at
+macro putAat   { lib a?; ld | rgB | (rgB >> 6); sto | rgA | (rgB >> 6) }                      # the word p points at = A (uses B)
+macro inc      { lia a?; ld | rgA | (rgA >> 6); lib 1; sum; lib a?; sto | rgA | (rgB >> 6) }  # v = v + 1 (uses A and B)
+macro goto     { jmp; a? }                                                                    # go to L
+macro if_eq    { jmp eq; a? }                                                                 # go to L when A == B
+macro do       { call; a? }                                                                   # call the subroutine L
+macro if_carry { jmp carry; a? }                                                              # go to L after a sub when A >= B
+macro if_nega  { jmp nega; a? }                                                               # go to L after a sub when A < B
 
 # ---- Variables (all below 0x1000, so lia/lib can address them) ----
 # The result
