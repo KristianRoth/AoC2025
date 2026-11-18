@@ -64,10 +64,10 @@
 # words can be added in a register without losing the carry: the carry ends up in the upper half, rgAH.
 #
 # THE FOUR IDIOMS used everywhere below (v is a variable's address, below 0x1000)
-#     lia v; load rgA rgA      A = the word at v, upper half 0   (lia puts the address in A, load replaces it)
-#     lib v; load rgB rgB      B = the word at v, upper half 0
-#     lib v; store rgA rgB     the word at v = the lower half of A   (this uses up B)
-#     psh rgAH; pop rgB        B = the upper half of A: the carry of the addition just made
+#     getA v                   A = the word at v, upper half 0   (lia v; load rgA rgA: lia puts the address in A, load replaces it)
+#     getB v                   B = the word at v, upper half 0
+#     putA v                   the word at v = the lower half of A   (this uses up B)
+#     carryB                   B = the upper half of A: the carry of the addition just made
 # What each instruction does exactly is in findings/cpu-instructions.md.
 #
 # MEMORY MAP
@@ -85,6 +85,20 @@ symbol sto 0b0101_0000_0000_0000
 
 macro  load  { ld  | a? | (b? >> 6) }
 macro  store { sto | a? | (b? >> 6) }
+
+# ---- Macros for the common operations (the README explains them; a macro cannot use load or store,
+#      so the bodies spell those out). v: a variable, p: a variable holding an address, L: a label ----
+macro getA    { lia a?; ld | rgA | (rgA >> 6) }                                                   # getA v: A = v
+macro getB    { lib a?; ld | rgB | (rgB >> 6) }                                                   # getB v: B = v
+macro putA    { lib a?; sto | rgA | (rgB >> 6) }                                                  # putA v: v = A (B is used up)
+macro putAat  { lib a?; ld | rgB | (rgB >> 6); sto | rgA | (rgB >> 6) }                           # putAat p: the word p points at = A (B is used up)
+macro inc     { lia a?; ld | rgA | (rgA >> 6); lib 1; sum; lib a?; sto | rgA | (rgB >> 6) }       # inc v: v = v + 1 (A and B are used up)
+macro goto    { jmp; a? }                                                                         # goto L: jump to L
+macro if_eq   { jmp eq; a? }                                                                      # if_eq L: jump to L when A == B
+macro if_neq  { jmp neq; a? }                                                                     # if_neq L: jump to L when A != B
+macro do      { call; a? }                                                                        # do L: call the subroutine L
+macro carryB  { psh rgAH; pop rgB }                                                               # carryB: B = the upper half of A (the carry of the last sum)
+macro if_nega { jmp nega; a? }                                                                    # if_nega L: jump to L when the last sub went below 0
 
 symbol sum    0b0110_0100_0000_0000
 symbol sum_32 0b0110_1100_0000_0000
@@ -171,7 +185,7 @@ pointer POWERS 0x0165 0x3100
 
 # ---- The CPU starts at 0xFF00 ----
 origin 0xFF00
-jmp; MAIN
+goto MAIN
 
 origin 0x1000
 @ MAIN
@@ -182,16 +196,16 @@ origin 0x1000
 # COPY_3 copies three words from the address in SRC to the address in DST and moves both on, so two
 # calls fill LO and then HI, which lies right behind LO.
 @ NEXT_RANGE
-	lia IN; load rgA rgA; lib SRC; store rgA rgB                                         # SRC = IN
-	lia LO_0; lib DST; store rgA rgB                                                     # DST = the address of LO
-	call; COPY_3                                                                         # LO = the range's first ID
-	call; COPY_3                                                                         # HI = the range's last ID
-	lia SRC; load rgA rgA; lib IN; store rgA rgB                                         # IN = SRC, now at the next range
+	getA IN; putA SRC                                                                    # SRC = IN
+	lia LO_0; putA DST                                                                   # DST = the address of LO
+	do COPY_3                                                                            # LO = the range's first ID
+	do COPY_3                                                                            # HI = the range's last ID
+	getA SRC; putA IN                                                                    # IN = SRC, now at the next range
 	# A first ID of 0 ends the list: OR the three words of LO together and compare with 0.
 	# (eq compares A with B as they are now, so no subtraction is needed.)
-	lia LO_0; load rgA rgA; lib LO_1; load rgB rgB; or; lib LO_2; load rgB rgB; or; lib 0
-	jmp eq; ALL_RANGES_DONE
-	lia K_TABLE; load rgA rgA; lib SRC; store rgA rgB                                    # SRC = the start of the table: the first family
+	getA LO_0; getB LO_1; or; getB LO_2; or; lib 0
+	if_eq ALL_RANGES_DONE
+	getA K_TABLE; putA SRC                                                               # SRC = the start of the table: the first family
 
 # ==== for each family in the table ====
 # SRC points at the family's table entry: [address of the next entry] [SIGN] [smallest candidate]
@@ -201,21 +215,21 @@ origin 0x1000
 #     if NEXT == 0: goto NEXT_RANGE      # the table is finished: all families done for this range
 #     if LAST < LO: goto SKIP_K          # every candidate of this family is below the range
 @ NEXT_K
-	lia NEXT; lib DST; store rgA rgB                                                     # DST = the address of NEXT
-	call; COPY_1                                                                         # NEXT = where the next family's entry starts
-	call; COPY_1                                                                         # SIGN = 0 to add this family, 1 to subtract it
-	call; COPY_3                                                                         # C = the smallest candidate of this family
-	call; COPY_3                                                                         # LAST = the largest candidate of this family
-	lia NEXT; load rgA rgA; lib 0                                                        # NEXT == 0 marks the end of the table
-	jmp eq; NEXT_RANGE
+	lia NEXT; putA DST                                                                   # DST = the address of NEXT
+	do COPY_1                                                                            # NEXT = where the next family's entry starts
+	do COPY_1                                                                            # SIGN = 0 to add this family, 1 to subtract it
+	do COPY_3                                                                            # C = the smallest candidate of this family
+	do COPY_3                                                                            # LAST = the largest candidate of this family
+	getA NEXT; lib 0                                                                     # NEXT == 0 marks the end of the table
+	if_eq NEXT_RANGE
 	# No candidate of this family is in the range when even the largest is below LO
 	# compare LAST with LO, highest word first; afterwards: nega if LAST < LO, zero if equal
-	lia LAST_2; load rgA rgA; lib LO_2; load rgB rgB; jmp neq; CMP_1                     # word 2 differs: it decides
-	lia LAST_1; load rgA rgA; lib LO_1; load rgB rgB; jmp neq; CMP_1                     # word 1 differs: it decides
-	lia LAST_0; load rgA rgA; lib LO_0; load rgB rgB                                     # otherwise word 0 decides
+	getA LAST_2; getB LO_2; if_neq CMP_1                                                 # word 2 differs: it decides
+	getA LAST_1; getB LO_1; if_neq CMP_1                                                 # word 1 differs: it decides
+	getA LAST_0; getB LO_0                                                               # otherwise word 0 decides
 @ CMP_1
 	sub                                                                                  # A - B sets the flags zero and nega
-	jmp nega; SKIP_K
+	if_nega SKIP_K
 
 # ==== walk C up to the largest candidate below LO ====
 #     while SRC != NEXT:                 # the step sizes are the rest of this family's entry
@@ -225,12 +239,12 @@ origin 0x1000
 # Step 101: 3131, 3232 (3333 is too far). C = 3232 is the largest candidate below 3308.
 # This is long division done by walking: it finds h in  h * M  one decimal digit at a time.
 @ NEXT_STEP
-	lia SRC; load rgA rgA; lib NEXT; load rgB rgB                                        # A = SRC, B = NEXT
-	jmp eq; STEPS_DONE                                                                   # SRC reached the next entry: no step sizes left
-	lia S_0; lib DST; store rgA rgB                                                      # DST = the address of S
-	call; COPY_3                                                                         # S = the next step size
-	call; STEP_UP                                                                        # while C + S < LO: C = C + S
-	jmp; NEXT_STEP
+	getA SRC; getB NEXT                                                                  # A = SRC, B = NEXT
+	if_eq STEPS_DONE                                                                     # SRC reached the next entry: no step sizes left
+	lia S_0; putA DST                                                                    # DST = the address of S
+	do COPY_3                                                                            # S = the next step size
+	do STEP_UP                                                                           # while C + S < LO: C = C + S
+	goto NEXT_STEP
 
 # ==== step onto the first candidate that is not below LO ====
 # S is now the smallest step, M: the distance between two candidates.
@@ -238,18 +252,18 @@ origin 0x1000
 # (C is not below LO only when even the family's smallest candidate is at or above LO.)
 @ STEPS_DONE
 	# compare C with LO, highest word first; afterwards: nega if C < LO, zero if equal
-	lia C_2; load rgA rgA; lib LO_2; load rgB rgB; jmp neq; CMP_2                        # word 2 differs: it decides
-	lia C_1; load rgA rgA; lib LO_1; load rgB rgB; jmp neq; CMP_2                        # word 1 differs: it decides
-	lia C_0; load rgA rgA; lib LO_0; load rgB rgB                                        # otherwise word 0 decides
+	getA C_2; getB LO_2; if_neq CMP_2                                                    # word 2 differs: it decides
+	getA C_1; getB LO_1; if_neq CMP_2                                                    # word 1 differs: it decides
+	getA C_0; getB LO_0                                                                  # otherwise word 0 decides
 @ CMP_2
 	sub                                                                                  # A - B sets the flags zero and nega
-	jmp nega; ONE_MORE                                                                   # C < LO: one more step
-	jmp; ADD_CANDIDATES                                                                  # C is already at or above LO
+	if_nega ONE_MORE                                                                     # C < LO: one more step
+	goto ADD_CANDIDATES                                                                  # C is already at or above LO
 @ ONE_MORE
 	# C = C + S      (three words, lowest first; the carry travels in rgAH)
-	lia C_0; load rgA rgA; lib S_0; load rgB rgB; sum; lib C_0; store rgA rgB            # word 0: A = C_0 + S_0
-	psh rgAH; pop rgB; lia C_1; load rgA rgA; sum; lib S_1; load rgB rgB; sum; lib C_1; store rgA rgB  # word 1: A = carry + C_1 + S_1
-	psh rgAH; pop rgB; lia C_2; load rgA rgA; sum; lib S_2; load rgB rgB; sum; lib C_2; store rgA rgB  # word 2: A = carry + C_2 + S_2
+	getA C_0; getB S_0; sum; putA C_0                                                    # word 0: A = C_0 + S_0
+	carryB; getA C_1; sum; getB S_1; sum; putA C_1                                                     # word 1: A = carry + C_1 + S_1
+	carryB; getA C_2; sum; getB S_2; sum; putA C_2                                                     # word 2: A = carry + C_2 + S_2
 
 # ==== add up the candidates inside the range ====
 #     while C <= HI and C <= LAST:
@@ -260,42 +274,42 @@ origin 0x1000
 # Leaving goes to NEXT_K; SRC already points at the next family's entry.
 @ ADD_CANDIDATES
 	# compare HI with C, highest word first; afterwards: nega if HI < C, zero if equal
-	lia HI_2; load rgA rgA; lib C_2; load rgB rgB; jmp neq; CMP_3                        # word 2 differs: it decides
-	lia HI_1; load rgA rgA; lib C_1; load rgB rgB; jmp neq; CMP_3                        # word 1 differs: it decides
-	lia HI_0; load rgA rgA; lib C_0; load rgB rgB                                        # otherwise word 0 decides
+	getA HI_2; getB C_2; if_neq CMP_3                                                    # word 2 differs: it decides
+	getA HI_1; getB C_1; if_neq CMP_3                                                    # word 1 differs: it decides
+	getA HI_0; getB C_0                                                                  # otherwise word 0 decides
 @ CMP_3
 	sub                                                                                  # A - B sets the flags zero and nega
-	jmp nega; NEXT_K                                                                     # HI < C: past the end of the range
+	if_nega NEXT_K                                                                       # HI < C: past the end of the range
 	# compare LAST with C, highest word first; afterwards: nega if LAST < C, zero if equal
-	lia LAST_2; load rgA rgA; lib C_2; load rgB rgB; jmp neq; CMP_4                      # word 2 differs: it decides
-	lia LAST_1; load rgA rgA; lib C_1; load rgB rgB; jmp neq; CMP_4                      # word 1 differs: it decides
-	lia LAST_0; load rgA rgA; lib C_0; load rgB rgB                                      # otherwise word 0 decides
+	getA LAST_2; getB C_2; if_neq CMP_4                                                  # word 2 differs: it decides
+	getA LAST_1; getB C_1; if_neq CMP_4                                                  # word 1 differs: it decides
+	getA LAST_0; getB C_0                                                                # otherwise word 0 decides
 @ CMP_4
 	sub                                                                                  # A - B sets the flags zero and nega
-	jmp nega; NEXT_K                                                                     # LAST < C: past the family's largest candidate
-	lia SIGN; load rgA rgA; lib 0                                                        # A = SIGN, B = 0
-	jmp eq; ADD_TO_SUM                                                                   # SIGN == 0: this family is added
+	if_nega NEXT_K                                                                       # LAST < C: past the family's largest candidate
+	getA SIGN; lib 0                                                                     # A = SIGN, B = 0
+	if_eq ADD_TO_SUM                                                                     # SIGN == 0: this family is added
 	# NEG = NEG + C      (three words, lowest first; the carry travels in rgAH)
-	lia NEG_0; load rgA rgA; lib C_0; load rgB rgB; sum; lib NEG_0; store rgA rgB        # word 0: A = NEG_0 + C_0
-	psh rgAH; pop rgB; lia NEG_1; load rgA rgA; sum; lib C_1; load rgB rgB; sum; lib NEG_1; store rgA rgB  # word 1: A = carry + NEG_1 + C_1
-	psh rgAH; pop rgB; lia NEG_2; load rgA rgA; sum; lib C_2; load rgB rgB; sum; lib NEG_2; store rgA rgB  # word 2: A = carry + NEG_2 + C_2
-	jmp; STEP_ON                                                                         # (SIGN == 1 was added to NEG)
+	getA NEG_0; getB C_0; sum; putA NEG_0                                                # word 0: A = NEG_0 + C_0
+	carryB; getA NEG_1; sum; getB C_1; sum; putA NEG_1                                                     # word 1: A = carry + NEG_1 + C_1
+	carryB; getA NEG_2; sum; getB C_2; sum; putA NEG_2                                                     # word 2: A = carry + NEG_2 + C_2
+	goto STEP_ON                                                                         # (SIGN == 1 was added to NEG)
 @ ADD_TO_SUM
 	# SUM = SUM + C      (three words, lowest first; the carry travels in rgAH)
-	lia SUM_0; load rgA rgA; lib C_0; load rgB rgB; sum; lib SUM_0; store rgA rgB        # word 0: A = SUM_0 + C_0
-	psh rgAH; pop rgB; lia SUM_1; load rgA rgA; sum; lib C_1; load rgB rgB; sum; lib SUM_1; store rgA rgB  # word 1: A = carry + SUM_1 + C_1
-	psh rgAH; pop rgB; lia SUM_2; load rgA rgA; sum; lib C_2; load rgB rgB; sum; lib SUM_2; store rgA rgB  # word 2: A = carry + SUM_2 + C_2
+	getA SUM_0; getB C_0; sum; putA SUM_0                                                # word 0: A = SUM_0 + C_0
+	carryB; getA SUM_1; sum; getB C_1; sum; putA SUM_1                                                     # word 1: A = carry + SUM_1 + C_1
+	carryB; getA SUM_2; sum; getB C_2; sum; putA SUM_2                                                     # word 2: A = carry + SUM_2 + C_2
 @ STEP_ON
 	# C = C + S      (three words, lowest first; the carry travels in rgAH)
-	lia C_0; load rgA rgA; lib S_0; load rgB rgB; sum; lib C_0; store rgA rgB            # word 0: A = C_0 + S_0
-	psh rgAH; pop rgB; lia C_1; load rgA rgA; sum; lib S_1; load rgB rgB; sum; lib C_1; store rgA rgB  # word 1: A = carry + C_1 + S_1
-	psh rgAH; pop rgB; lia C_2; load rgA rgA; sum; lib S_2; load rgB rgB; sum; lib C_2; store rgA rgB  # word 2: A = carry + C_2 + S_2
-	jmp; ADD_CANDIDATES
+	getA C_0; getB S_0; sum; putA C_0                                                    # word 0: A = C_0 + S_0
+	carryB; getA C_1; sum; getB S_1; sum; putA C_1                                                     # word 1: A = carry + C_1 + S_1
+	carryB; getA C_2; sum; getB S_2; sum; putA C_2                                                     # word 2: A = carry + C_2 + S_2
+	goto ADD_CANDIDATES
 
 # Skip this family without reading its step sizes:  SRC = NEXT
 @ SKIP_K
-	lia NEXT; load rgA rgA; lib SRC; store rgA rgB                                       # SRC = NEXT
-	jmp; NEXT_K
+	getA NEXT; putA SRC                                                                  # SRC = NEXT
+	goto NEXT_K
 
 # ==== finish: SUM = SUM - NEG, then write SUM as decimal digits ====
 # A digit is how often a power of ten fits into what is left. Without division that is counting:
@@ -310,25 +324,25 @@ origin 0x1000
 	# SUM = SUM - NEG, word by word, lowest first. When a word needs to borrow, the 32-bit result is
 	# negative and rgAH reads 0xFFFF. Copying rgAH into both halves of B makes B = -1 (or 0 when there
 	# was no borrow), and adding that to the next word takes the borrow off.
-	lia SUM_0; load rgA rgA; lib NEG_0; load rgB rgB; sub; lib SUM_0; store rgA rgB      # word 0: A = SUM_0 - NEG_0
-	psh rgAH; pop rgB; psh rgAH; pop rgBH; lia SUM_1; load rgA rgA; sum; lib NEG_1; load rgB rgB; sub; lib SUM_1; store rgA rgB  # word 1: A = SUM_1 + borrow (0 or -1) - NEG_1
-	psh rgAH; pop rgB; psh rgAH; pop rgBH; lia SUM_2; load rgA rgA; sum; lib NEG_2; load rgB rgB; sub; lib SUM_2; store rgA rgB  # word 2: A = SUM_2 + borrow (0 or -1) - NEG_2
+	getA SUM_0; getB NEG_0; sub; putA SUM_0                                              # word 0: A = SUM_0 - NEG_0
+	carryB; psh rgAH; pop rgBH; getA SUM_1; sum; getB NEG_1; sub; putA SUM_1                                                     # word 1: A = SUM_1 + borrow (0 or -1) - NEG_1
+	carryB; psh rgAH; pop rgBH; getA SUM_2; sum; getB NEG_2; sub; putA SUM_2                                                     # word 2: A = SUM_2 + borrow (0 or -1) - NEG_2
 	# LO = SUM + ONE      (three words, lowest first; the carry travels in rgAH)
-	lia SUM_0; load rgA rgA; lib ONE_0; load rgB rgB; sum; lib LO_0; store rgA rgB       # word 0: A = SUM_0 + ONE_0
-	psh rgAH; pop rgB; lia SUM_1; load rgA rgA; sum; lib ONE_1; load rgB rgB; sum; lib LO_1; store rgA rgB  # word 1: A = carry + SUM_1 + ONE_1
-	psh rgAH; pop rgB; lia SUM_2; load rgA rgA; sum; lib ONE_2; load rgB rgB; sum; lib LO_2; store rgA rgB  # word 2: A = carry + SUM_2 + ONE_2
-	lia 0; lib C_0; store rgA rgB; lib C_1; store rgA rgB; lib C_2; store rgA rgB        # C = 0
-	lia POWERS; load rgA rgA; lib SRC; store rgA rgB                                     # SRC = the table of powers of ten
+	getA SUM_0; getB ONE_0; sum; putA LO_0                                               # word 0: A = SUM_0 + ONE_0
+	carryB; getA SUM_1; sum; getB ONE_1; sum; putA LO_1                                                     # word 1: A = carry + SUM_1 + ONE_1
+	carryB; getA SUM_2; sum; getB ONE_2; sum; putA LO_2                                                     # word 2: A = carry + SUM_2 + ONE_2
+	lia 0; putA C_0; putA C_1; putA C_2                                                  # C = 0
+	getA POWERS; putA SRC                                                                # SRC = the table of powers of ten
 @ NEXT_DIGIT
-	lia S_0; lib DST; store rgA rgB                                                      # DST = the address of S
-	call; COPY_3                                                                         # S = the next power of ten
+	lia S_0; putA DST                                                                    # DST = the address of S
+	do COPY_3                                                                            # S = the next power of ten
 	# A power of 0 ends the table
-	lia S_0; load rgA rgA; lib S_1; load rgB rgB; or; lib S_2; load rgB rgB; or; lib 0
-	jmp eq; END
-	call; STEP_UP                                                                        # COUNT = how often S fits
-	lia COUNT; load rgA rgA; lib DIGIT; load rgB rgB; store rgA rgB                      # memory[DIGIT] = COUNT   (B holds the address in DIGIT)
-	lia DIGIT; load rgA rgA; lib 1; sum; lib DIGIT; store rgA rgB                        # DIGIT = DIGIT + 1
-	jmp; NEXT_DIGIT
+	getA S_0; getB S_1; or; getB S_2; or; lib 0
+	if_eq END
+	do STEP_UP                                                                           # COUNT = how often S fits
+	getA COUNT; putAat DIGIT                                                             # memory[DIGIT] = COUNT   (B holds the address in DIGIT)
+	inc DIGIT                                                                            # DIGIT = DIGIT + 1
+	goto NEXT_DIGIT
 
 # The word 0 stops the CPU on its Breakpoint.
 @ END
@@ -344,32 +358,32 @@ origin 0x1800
 #         C = T; COUNT = COUNT + 1
 # Used twice: to walk a candidate up to a range (COUNT is ignored), and to produce decimal digits.
 @ STEP_UP
-	lia 0; lib COUNT; store rgA rgB                                                      # COUNT = 0
+	lia 0; putA COUNT                                                                    # COUNT = 0
 @ STEP_UP_AGAIN
 	# T = C + S      (three words, lowest first; the carry travels in rgAH)
-	lia C_0; load rgA rgA; lib S_0; load rgB rgB; sum; lib T_0; store rgA rgB            # word 0: A = C_0 + S_0
-	psh rgAH; pop rgB; lia C_1; load rgA rgA; sum; lib S_1; load rgB rgB; sum; lib T_1; store rgA rgB  # word 1: A = carry + C_1 + S_1
-	psh rgAH; pop rgB; lia C_2; load rgA rgA; sum; lib S_2; load rgB rgB; sum; lib T_2; store rgA rgB  # word 2: A = carry + C_2 + S_2
+	getA C_0; getB S_0; sum; putA T_0                                                    # word 0: A = C_0 + S_0
+	carryB; getA C_1; sum; getB S_1; sum; putA T_1                                                     # word 1: A = carry + C_1 + S_1
+	carryB; getA C_2; sum; getB S_2; sum; putA T_2                                                     # word 2: A = carry + C_2 + S_2
 	# compare T with LO, highest word first; afterwards: nega if T < LO, zero if equal
-	lia T_2; load rgA rgA; lib LO_2; load rgB rgB; jmp neq; CMP_5                        # word 2 differs: it decides
-	lia T_1; load rgA rgA; lib LO_1; load rgB rgB; jmp neq; CMP_5                        # word 1 differs: it decides
-	lia T_0; load rgA rgA; lib LO_0; load rgB rgB                                        # otherwise word 0 decides
+	getA T_2; getB LO_2; if_neq CMP_5                                                    # word 2 differs: it decides
+	getA T_1; getB LO_1; if_neq CMP_5                                                    # word 1 differs: it decides
+	getA T_0; getB LO_0                                                                  # otherwise word 0 decides
 @ CMP_5
 	sub                                                                                  # A - B sets the flags zero and nega
-	jmp nega; STEP_UP_TAKE                                                               # T < LO: take the step
+	if_nega STEP_UP_TAKE                                                                 # T < LO: take the step
 	ret                                                                                  # otherwise done
 @ STEP_UP_TAKE
 	# C = T, word by word
-	lia T_0; load rgA rgA; lib C_0; store rgA rgB; lia T_1; load rgA rgA; lib C_1; store rgA rgB; lia T_2; load rgA rgA; lib C_2; store rgA rgB
-	lia COUNT; load rgA rgA; lib 1; sum; lib COUNT; store rgA rgB                        # COUNT = COUNT + 1
-	jmp; STEP_UP_AGAIN
+	getA T_0; putA C_0; getA T_1; putA C_1; getA T_2; putA C_2
+	inc COUNT                                                                            # COUNT = COUNT + 1
+	goto STEP_UP_AGAIN
 
 # COPY_3: copy three words (one number) from the address in SRC to the address in DST; both move on by three.
 #     repeat 3 times: memory[DST] = memory[SRC]; SRC = SRC + 1; DST = DST + 1
 @ COPY_3
-	call; COPY_1
-	call; COPY_1
-	call; COPY_1
+	do COPY_1
+	do COPY_1
+	do COPY_1
 	ret
 
 # COPY_1: copy one word from the address in SRC to the address in DST; both move on by one.
@@ -377,9 +391,9 @@ origin 0x1800
 # SRC and DST are pointers: variables that hold an address. Reading through one takes two loads:
 # first the address into B, then the word at that address.
 @ COPY_1
-	lib SRC; load rgB rgB; load rgA rgB; lib DST; load rgB rgB; store rgA rgB            # A = memory[SRC]; memory[DST] = A
-	lia SRC; load rgA rgA; lib 1; sum; lib SRC; store rgA rgB                            # SRC = SRC + 1
-	lia DST; load rgA rgA; lib 1; sum; lib DST; store rgA rgB                            # DST = DST + 1
+	getB SRC; load rgA rgB; putAat DST                                                   # A = memory[SRC]; memory[DST] = A
+	inc SRC                                                                              # SRC = SRC + 1
+	inc DST                                                                              # DST = DST + 1
 	ret
 
 # ---- The table of families ----

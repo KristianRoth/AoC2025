@@ -51,7 +51,7 @@ Every solution from day 2 on follows the same form, so it can be read without ru
 - **Pseudo code before each section** of the assembly (each loop, each subroutine), saying what that block does in terms of the variables.
 - **A comment on the code rows**, at the end of the line, in terms of the variables: `# SRC = SRC + 1`, `# word 1: A = carry + C_1 + S_1`, `# HI < C: past the end of the range`. Table and data rows say what the words are in decimal.
 - **Names over numbers:** every variable is a `pointer` with a name, every jump target a label.
-- **Macros for the common operations** (from 2026-11-18 on; the programs of days 1 to 4 were written before and stay as they are): a new program defines the macros listed under [Macros for the common operations](#macros-for-the-common-operations) after its instruction symbols and uses them wherever the operation occurs, so a row reads `getA ROW; getB GRID; if_lt DONE` and not ten instructions. An operation the program itself repeats often gets its own macro in the same way.
+- **Macros for the common operations** (the programs of days 2 to 4 were rewritten with them on 2026-11-18, storing the same words as before; day 1 is the owner's own and stays as it is): a program defines the ones it uses from [Macros for the common operations](#macros-for-the-common-operations) after its instruction symbols and uses them wherever the operation occurs, so a row reads `getA ROW; getB GRID; if_lt DONE` and not ten instructions. An operation the program itself repeats often gets its own macro in the same way.
 
 A comment explains what the line means for the program, not what the instruction does; what the instructions do is in [`findings/cpu-instructions.md`](findings/cpu-instructions.md).
 
@@ -234,6 +234,8 @@ macro do     { call; a? }
 | `if_eq L`, `if_neq L` | jump to L when A == B, A != B | 2 |
 | `if_lt L`, `if_ge L` | jump to L when A < B, A >= B (A becomes A - B) | 3 |
 | `do L` | call the subroutine L | 2 |
+| `if_zero L`, `if_carry L`, `if_nega L` | jump to L on the flag the last `sum` or `sub` left (`sub` on its own row, then `if_nega L`: A < B) | 2 |
+| `carryB` | B = the upper half of A, the carry of the last `sum` (`psh rgAH; pop rgB`) | 2 |
 
 Rules the game sets:
 - A macro cannot use another macro, so the bodies write `ld | rgA | (rgA >> 6)` where a program row would say `load rgA rgA`.
