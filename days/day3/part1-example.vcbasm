@@ -1,0 +1,266 @@
+# Advent of Code 2025, day 3 part 1 (Lobby), with the puzzle's example as input (answer 357)
+#
+# THE PUZZLE
+# Each line of the input is a bank of batteries, each battery a digit 1-9. From every bank exactly two
+# batteries are switched on; the bank's joltage is the two-digit number they form, in their order in the
+# bank. The answer is the sum of the largest joltage of every bank.
+#
+# THE IDEA
+# Go through a bank once, digit by digit, and remember three things:
+#     MAX    the largest digit seen so far
+#     TENS, UNITS   the best pair found so far
+# When a new digit D arrives, the best pair that ends in D has MAX as its first digit (the largest digit
+# before D). So the new candidate is the pair (MAX, D). It replaces (TENS, UNITS) when it is larger.
+# Because MAX never gets smaller, TENS is an older value of MAX and MAX >= TENS always holds. That makes
+# the comparison short:
+#     MAX != TENS   means MAX > TENS:        the candidate wins, whatever D is
+#     MAX == TENS   the first digits tie:    the candidate wins when D > UNITS
+# Example 818181911112111: after 8,1,8,1,8,1 the best pair is 88. Then 9 arrives: candidate 89 wins
+# (same tens, larger units), and MAX becomes 9. Then 1: candidate 91 wins, because 9 != 8. The 2 later
+# gives 92, the answer for this bank.
+#
+# NO MULTIPLICATION
+# A bank's joltage is 10 * TENS + UNITS, and the CPU cannot multiply. So the program adds up all TENS in
+# SUM_TENS and all UNITS in SUM and multiplies once at the end, by doubling:
+#     10 * x = 8 * x + 2 * x = ((x + x) + (x + x)) + ((x + x) + (x + x)) + (x + x)
+#
+# THE WHOLE PROGRAM IN PSEUDO CODE
+#     SUM = 0; SUM_TENS = 0
+#     MAX = 0; TENS = 0; UNITS = 0
+#     loop:
+#         D = input[IN]; IN = IN + 1
+#         if D == 0:                            # the end of a bank
+#             if MAX == 0: break                # an empty bank: the end of the input
+#             SUM_TENS = SUM_TENS + TENS
+#             SUM = SUM + UNITS
+#             MAX = 0; TENS = 0; UNITS = 0
+#             continue
+#         if MAX != TENS: TENS = MAX; UNITS = D # the pair (MAX, D) beats (TENS, UNITS)
+#         else if D > UNITS: UNITS = D
+#         if D > MAX: MAX = D
+#     SUM = SUM + 10 * SUM_TENS
+#     write SUM as five decimal digits
+#     stop
+#
+# The first digit of a bank is compared against MAX = 0, which gives the pair (0, D). Every later pair
+# has a first digit of at least 1, so it replaces that one; a bank has at least two digits.
+#
+# THE RESULT, when the CPU stops on the Breakpoint at END
+#   0x0100         the sum as one 16-bit word
+#   0x0110-0x0114  the sum as five decimal digits, one per word, most significant first
+#
+# THE INPUT (rule 1 of RULES.md), at 0x2000
+# One word per battery holding its digit, bank after bank; a word 0 ends each bank, and a second 0 after
+# the last bank ends the input. Built-in limits: the sum must stay below 65,536, which holds for up to
+# 661 banks (a bank gives at most 99).
+#
+# ONE WORD IS ENOUGH
+# Every value here fits in 16 bits, so each variable is one memory word, and the 32-bit registers never
+# carry. The two idioms used everywhere (v is a variable's address, below 0x1000):
+#     lia v; load rgA rgA      A = the word at v   (lia puts the address in A, load replaces it)
+#     lib v; load rgB rgB      B = the word at v
+#     lib v; store rgA rgB     the word at v = A   (this uses up B)
+# and the two comparisons:
+#     jmp eq / jmp neq         compares A with B as they are now
+#     sub; jmp nega            after A - B: taken when A < B
+# What each instruction does exactly is in findings/cpu-instructions.md.
+#
+# MEMORY MAP
+#   0x0100-0x0128  variables            0x2000-  the input
+#   0x1000-        the program          0x1F00-  POWERS: 10000, 1000, 100, 10, 1, 0
+#   (the input is long: 200 banks of 100 digits end at 0x6EE8, so nothing else may lie above 0x2000)
+#   0xFF00         where the CPU starts
+
+# ---- The CPU's instructions as symbols (the same table as in day 1) ----
+symbol nop 0b0000_0000_0000_0000
+symbol ld  0b0010_0000_0000_0000
+symbol lia 0b0011_0000_0000_0000
+symbol lib 0b0100_0000_0000_0000
+symbol sto 0b0101_0000_0000_0000
+
+macro  load  { ld  | a? | (b? >> 6) }
+macro  store { sto | a? | (b? >> 6) }
+
+symbol sum    0b0110_0100_0000_0000
+symbol sum_32 0b0110_1100_0000_0000
+symbol sub    0b0110_0010_0000_0000
+symbol sub_32 0b0110_1010_0000_0000
+symbol shf    0b0110_0001_0000_0000
+symbol shf_32 0b0110_1001_0000_0000
+symbol and    0b0110_0000_1000_0000
+symbol and_32 0b0110_1000_1000_0000
+symbol or     0b0110_0000_0100_0000
+symbol or_32  0b0110_1000_0100_0000
+symbol xor    0b0110_0000_0010_0000
+symbol xor_32 0b0110_1000_0010_0000
+symbol neg    0b0110_0000_0001_0000
+symbol neg_32 0b0110_1000_0001_0000
+
+symbol psh 0b1010_0000_0000_0000
+symbol pop 0b1011_0000_0000_0000
+
+symbol jmp  0b1100_0000_0000_0000
+symbol call 0b1110_0000_0000_0000
+symbol ret  0b1111_0000_0000_0000
+
+symbol rgAH 0b1000_0000_0000
+symbol rgA  0b0100_0000_0000
+symbol rgBH 0b0010_0000_0000
+symbol rgB  0b0001_0000_0000
+symbol rgSP 0b0000_1000_0000
+symbol rgSB 0b0000_0100_0000
+symbol non  0
+
+symbol zero  0b1000_0000_0000 
+symbol carry 0b0100_0000_0000
+symbol nega  0b0010_0000_0000
+symbol eq    0b0001_0000_0000
+symbol neq   0b0000_1000_0000
+
+# ---- Variables (all below 0x1000, so lia/lib can address them) ----
+# The result
+pointer SUM 0x0100 0
+# The sum of the tens digits of all banks, multiplied by 10 at the end
+pointer SUM_TENS 0x0101 0
+# The current bank: the digit just read, the largest digit so far, and the best pair so far
+pointer D 0x0120 0
+pointer MAX 0x0121 0
+pointer TENS 0x0122 0
+pointer UNITS 0x0123 0
+# For the decimal digits: the current power of ten and how often it fitted
+pointer POWER 0x0124 0
+pointer COUNT 0x0125 0
+# Pointers: IN the next input word, DIGIT the next digit to write, POW the next power of ten
+pointer IN 0x0126 0x2000
+pointer DIGIT 0x0127 0x0110
+pointer POW 0x0128 0x1F00
+
+# ---- The CPU starts at 0xFF00 ----
+origin 0xFF00
+jmp; MAIN
+
+origin 0x1000
+@ MAIN
+# ==== read the next digit ====
+#     D = input[IN]; IN = IN + 1
+#     if D == 0: goto END_OF_BANK
+# IN is a pointer: a variable that holds an address. Reading through it takes two loads: first the
+# address into B, then the word at that address into A. lia 0 first clears A's upper half, because
+# load only replaces the lower half.
+@ NEXT_DIGIT
+	lia 0; lib IN; load rgB rgB; load rgA rgB                    # A = input[IN]
+	lib D; store rgA rgB                                         # D = A
+	lib 0                                                        # B = 0, to compare with
+	jmp eq; END_OF_BANK                                          # D == 0: the bank is finished
+	lia IN; load rgA rgA; lib 1; sum; lib IN; store rgA rgB      # IN = IN + 1
+
+# ==== is the pair (MAX, D) better than (TENS, UNITS)? ====
+#     if MAX != TENS: TENS = MAX; UNITS = D      # MAX > TENS: a larger first digit wins
+#     else if D > UNITS: UNITS = D               # the same first digit: the larger second digit wins
+	lia MAX; load rgA rgA; lib TENS; load rgB rgB                # A = MAX, B = TENS
+	jmp neq; NEW_PAIR                                            # MAX != TENS, so MAX > TENS
+	# MAX == TENS: compare the second digits
+	lia UNITS; load rgA rgA; lib D; load rgB rgB                 # A = UNITS, B = D
+	sub                                                          # A - B is negative when UNITS < D
+	jmp nega; NEW_UNITS                                          # D > UNITS
+	jmp; UPDATE_MAX                                              # the old pair stays
+@ NEW_PAIR
+	lia MAX; load rgA rgA; lib TENS; store rgA rgB               # TENS = MAX
+@ NEW_UNITS
+	lia D; load rgA rgA; lib UNITS; store rgA rgB                # UNITS = D
+
+# ==== remember the largest digit ====
+#     if D > MAX: MAX = D
+# This comes after the pair test, so that D is never paired with itself.
+@ UPDATE_MAX
+	lia MAX; load rgA rgA; lib D; load rgB rgB                   # A = MAX, B = D
+	sub                                                          # A - B is negative when MAX < D
+	jmp nega; NEW_MAX                                            # D > MAX
+	jmp; NEXT_DIGIT                                              #
+@ NEW_MAX
+	lia D; load rgA rgA; lib MAX; store rgA rgB                  # MAX = D
+	jmp; NEXT_DIGIT                                              #
+
+# ==== the end of a bank ====
+#     if MAX == 0: goto ALL_BANKS_DONE           # no digit was read: this 0 ends the input
+#     SUM_TENS = SUM_TENS + TENS
+#     SUM = SUM + UNITS
+#     MAX = 0; TENS = 0; UNITS = 0
+#     IN = IN + 1                                # step over the 0
+@ END_OF_BANK
+	lia MAX; load rgA rgA; lib 0                                 # A = MAX, B = 0
+	jmp eq; ALL_BANKS_DONE                                       # an empty bank: the input is finished
+	lia SUM_TENS; load rgA rgA; lib TENS; load rgB rgB; sum      # A = SUM_TENS + TENS
+	lib SUM_TENS; store rgA rgB                                  # SUM_TENS = A
+	lia SUM; load rgA rgA; lib UNITS; load rgB rgB; sum          # A = SUM + UNITS
+	lib SUM; store rgA rgB                                       # SUM = A
+	lia 0; lib MAX; store rgA rgB; lib TENS; store rgA rgB       # MAX = 0; TENS = 0
+	lib UNITS; store rgA rgB                                     # UNITS = 0
+	lia IN; load rgA rgA; lib 1; sum; lib IN; store rgA rgB      # IN = IN + 1
+	jmp; NEXT_DIGIT                                              #
+
+# ==== SUM = SUM + 10 * SUM_TENS ====
+# Doubling is A + A. psh rgA; pop rgB copies A into B (B's upper half is 0 after the lib before it).
+#     A = SUM_TENS
+#     A = A + A                                  # 2 * SUM_TENS
+#     SUM = SUM + A
+#     A = A + A; A = A + A                       # 8 * SUM_TENS
+#     SUM = SUM + A
+@ ALL_BANKS_DONE
+	lia SUM_TENS; load rgA rgA; lib 0                            # A = SUM_TENS; B = 0 clears B's upper half
+	psh rgA; pop rgB; sum                                        # A = 2 * SUM_TENS
+	lib SUM_TENS; store rgA rgB                                  # SUM_TENS = 2 * SUM_TENS (kept for the next step)
+	lib SUM; load rgB rgB; sum; lib SUM; store rgA rgB           # SUM = SUM + 2 * SUM_TENS
+	lia SUM_TENS; load rgA rgA; lib 0                            # A = 2 * SUM_TENS
+	psh rgA; pop rgB; sum                                        # A = 4 * SUM_TENS
+	psh rgA; pop rgB; sum                                        # A = 8 * SUM_TENS
+	lib SUM; load rgB rgB; sum; lib SUM; store rgA rgB           # SUM = SUM + 8 * SUM_TENS
+
+# ==== write SUM as five decimal digits ====
+# A digit is how often a power of ten fits into what is left. Without division that is counting:
+#     D = SUM                                    # D is free now; it holds what is left
+#     for POWER in 10000, 1000, 100, 10, 1:
+#         COUNT = 0
+#         while D >= POWER: D = D - POWER; COUNT = COUNT + 1
+#         memory[DIGIT] = COUNT; DIGIT = DIGIT + 1
+# After sub, the carry flag is set when A >= B (no borrow).
+	lia SUM; load rgA rgA; lib D; store rgA rgB                  # D = SUM
+@ NEXT_POWER
+	lia 0; lib POW; load rgB rgB; load rgA rgB                   # A = powers[POW]
+	lib POWER; store rgA rgB                                     # POWER = A
+	lib 0                                                        # B = 0
+	jmp eq; END                                                  # a power of 0 ends the table
+	lia POW; load rgA rgA; lib 1; sum; lib POW; store rgA rgB    # POW = POW + 1
+	lia 0; lib COUNT; store rgA rgB                              # COUNT = 0
+@ COUNT_AGAIN
+	lia D; load rgA rgA; lib POWER; load rgB rgB                 # A = D, B = POWER
+	sub                                                          # A = D - POWER
+	jmp carry; COUNT_ONE                                         # D >= POWER: it fits once more
+	lia COUNT; load rgA rgA; lib DIGIT; load rgB rgB; store rgA rgB# memory[DIGIT] = COUNT   (B holds the address in DIGIT)
+	lia DIGIT; load rgA rgA; lib 1; sum; lib DIGIT; store rgA rgB# DIGIT = DIGIT + 1
+	jmp; NEXT_POWER                                              #
+@ COUNT_ONE
+	lib D; store rgA rgB                                         # D = D - POWER   (A still holds the difference)
+	lia COUNT; load rgA rgA; lib 1; sum; lib COUNT; store rgA rgB# COUNT = COUNT + 1
+	jmp; COUNT_AGAIN                                             #
+
+# The word 0 stops the CPU on its Breakpoint.
+@ END
+	non
+
+# ---- Powers of ten for the decimal digits, then 0 ----
+origin 0x1F00
+10000; 1000; 100; 10; 1; 0
+
+# ---- The input: 4 banks ----
+# One word per battery; a 0 ends each bank; one more 0 ends the input.
+origin 0x2000
+# bank 1: 987654321111111
+9; 8; 7; 6; 5; 4; 3; 2; 1; 1; 1; 1; 1; 1; 1; 0
+# bank 2: 811111111111119
+8; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 9; 0
+# bank 3: 234234234234278
+2; 3; 4; 2; 3; 4; 2; 3; 4; 2; 3; 4; 2; 7; 8; 0
+# bank 4: 818181911112111
+8; 1; 8; 1; 8; 1; 9; 1; 1; 1; 1; 2; 1; 1; 1; 0
+0
