@@ -29,8 +29,8 @@ All work on the full 32 bits: A = A op B.
 |---|---|---|
 | `sum` | A + B | zero: result is 0. carry: carry out of bit 31. nega: bit 31 of the result. |
 | `sub` | A - B | zero: equal. carry: A >= B (no borrow). nega: A < B when both are below 2^31. |
-| `and`, `or` | bitwise | **All three flags are cleared**, also when the result is 0. |
-| `xor`, `neg` | A becomes 0 | Not working. |
+| `and`, `or`, `xor` | bitwise | Not usable: zero is 0 even when the result is 0. (They look like the flags A + B would give.) |
+| `neg` | every bit of A flipped (`neg` of 5 is `0xFFFFFFFA`). It is a bitwise NOT, not a change of sign; for -A add 1 afterwards | Not usable, as for `and`. |
 | `shf \| n` | A shifted left by n places (n from 0 to 15, the instruction's four low bits), zeros shifted in | Works since the shift fix of 2026-11-17 (below); before it A came out unchanged. B plays no part. Flags not tested. |
 
 - The `_32` symbols (`sum_32` …) set a bit the CPU ignores. `sum` and `sum_32` do the same.
@@ -63,8 +63,14 @@ The shift did not work on the CPU as first built. Traced in the engine after the
 
 With it, `shf | n` shifts A left by n places (n from 0 to 15, all 32 bits, zeros shifted in; `0x1234F0F5` by 4 gives `0x234F0F50`). B plays no part. `sum`, `lia` and the day 1 and day 2 programs run exactly as before, tick for tick.
 
+## The xor and neg fix (2026-11-18)
+The same fault as the shift, one step further along. `xor` is selected by bit 5 of the instruction and `neg` by bit 4. The decoder for the ALU's functions (x 1069–1075, y 163–175) reads colours 4 to 10 of the upper bus, but colours 4 and 5 were never driven there, so neither function was ever selected and A came out as 0.
+
+**The fix** (24 pixels, drawn into all four CPU boards on 2026-11-18 at the owner's request; checked in the engine, not yet run in the game): both bus rows are extended to x 1133, and two more vertical traces run from y 216 to y 223, colour 4 at x 1131 and colour 5 at x 1133.
+
+With it, `xor` gives A xor B and `neg` gives NOT A. `sum`, `sub`, `and`, `or`, `shf`, `lia`, `lib` and the day 1 and day 2 programs behave exactly as before, tick for tick. Both fixes were found before `xor` and `neg` only existed on paper: before 2026-11-18 they set A to 0.
+
 ## Changes that would help (suggestions only)
 - A right shift.
 - An add that takes the carry flag in, for numbers wider than 32 bits.
-- Working `xor` and `neg`.
 - `lia`/`lib` that leave the upper half alone, or a way to load a 16-bit immediate.
