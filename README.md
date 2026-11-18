@@ -56,7 +56,7 @@ A comment explains what the line means for the program, not what the instruction
 
 ## Performance
 
-Measured in the `vcb` engine on `cpu-32bit-autorun-aoc1p1.vcb`, to the Breakpoint. The tick count is the same in the game (the game's counter shows one more). The engine runs about 6 million ticks per second on the machine these were measured on.
+Measured in the `vcb` engine on `cpu-32bit-autorun-aoc1p1.vcb`, to the Breakpoint. The tick count is the same in the game (the game's counter shows one more). The engine runs 5 to 6 million ticks per second on the machine these were measured on, depending on what else it is doing, so the times are rough; the tick counts are exact.
 
 | Program | Answer | Ticks | Engine time | Instructions run (about) | Program and data |
 |---|---|---|---|---|---|
