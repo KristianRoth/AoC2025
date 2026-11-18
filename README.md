@@ -239,4 +239,4 @@ Rules the game sets:
 - A macro cannot use another macro, so the bodies write `ld | rgA | (rgA >> 6)` where a program row would say `load rgA rgA`.
 - Nothing may follow the closing brace on the definition's line except a comment.
 - A macro of several instructions is a statement of its own: `getA v; sum` is fine, `getA v | 1` is not.
-- A macro costs nothing at run time: it stores the same words as the instructions written out (checked in the engine: the thirteen macros above against the same code by hand, 37 words equal).
+- A macro costs nothing at run time: it stores the same words as the instructions written out (checked in the engine and in the game on 2026-11-18: the thirteen macros above against the same code by hand, 37 words equal).
