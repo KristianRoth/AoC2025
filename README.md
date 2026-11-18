@@ -51,6 +51,7 @@ Every solution from day 2 on follows the same form, so it can be read without ru
 - **Pseudo code before each section** of the assembly (each loop, each subroutine), saying what that block does in terms of the variables.
 - **A comment on the code rows**, at the end of the line, in terms of the variables: `# SRC = SRC + 1`, `# word 1: A = carry + C_1 + S_1`, `# HI < C: past the end of the range`. Table and data rows say what the words are in decimal.
 - **Names over numbers:** every variable is a `pointer` with a name, every jump target a label.
+- **Macros for the common operations** (from 2026-11-18 on; the programs of days 1 to 4 were written before and stay as they are): a new program defines the macros listed under [Macros for the common operations](#macros-for-the-common-operations) after its instruction symbols and uses them wherever the operation occurs, so a row reads `getA ROW; getB GRID; if_lt DONE` and not ten instructions. An operation the program itself repeats often gets its own macro in the same way.
 
 A comment explains what the line means for the program, not what the instruction does; what the instructions do is in [`findings/cpu-instructions.md`](findings/cpu-instructions.md).
 
@@ -199,3 +200,43 @@ macro  store { sto | a? | (b? >> 6) }
 | if a >= b: goto L | the same with `jmp carry; L` | 6 |
 | goto the address in A | `psh rgA; pop rgSP` (`rgSP` is the program counter) | 2 |
 | add two numbers wider than 32 bits | word by word from the lowest; after each `sum` the carry is in the upper half: `psh rgAH; pop rgB` moves it into B for the next word (see day 2) | |
+
+### Macros for the common operations
+
+A macro body may hold several instructions separated by `;` (the game's compact sample computer does it, and the engine's assembler follows). These cover the rows of the table above that make up most of every program. `v` is a variable, `p` a variable that holds an address, `L` a label.
+
+```
+macro getA   { lia a?; ld | rgA | (rgA >> 6) }
+macro getB   { lib a?; ld | rgB | (rgB >> 6) }
+macro putA   { lib a?; sto | rgA | (rgB >> 6) }
+macro getAat { lia a?; ld | rgA | (rgA >> 6); ld | rgA | (rgA >> 6) }
+macro putAat { lib a?; ld | rgB | (rgB >> 6); sto | rgA | (rgB >> 6) }
+macro inc    { lia a?; ld | rgA | (rgA >> 6); lib 1; sum; lib a?; sto | rgA | (rgB >> 6) }
+macro copyAB { psh rgA; pop rgB }
+macro goto   { jmp; a? }
+macro if_eq  { jmp eq; a? }
+macro if_neq { jmp neq; a? }
+macro if_lt  { sub; jmp nega; a? }
+macro if_ge  { sub; jmp carry; a? }
+macro do     { call; a? }
+```
+
+| Write | Meaning | Instructions |
+|---|---|---|
+| `getA v` | A = v | 2 |
+| `getB v` | B = v | 2 |
+| `putA v` | v = A (B is used up) | 2 |
+| `getAat p` | A = the word p points at | 3 |
+| `putAat p` | the word p points at = A (B is used up) | 3 |
+| `inc v` | v = v + 1 (A and B are used up) | 6 |
+| `copyAB` | B = A (lower half) | 2 |
+| `goto L` | jump to L | 2 |
+| `if_eq L`, `if_neq L` | jump to L when A == B, A != B | 2 |
+| `if_lt L`, `if_ge L` | jump to L when A < B, A >= B (A becomes A - B) | 3 |
+| `do L` | call the subroutine L | 2 |
+
+Rules the game sets:
+- A macro cannot use another macro, so the bodies write `ld | rgA | (rgA >> 6)` where a program row would say `load rgA rgA`.
+- Nothing may follow the closing brace on the definition's line except a comment.
+- A macro of several instructions is a statement of its own: `getA v; sum` is fine, `getA v | 1` is not.
+- A macro costs nothing at run time: it stores the same words as the instructions written out (checked in the engine: the thirteen macros above against the same code by hand, 37 words equal).
