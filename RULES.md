@@ -11,7 +11,7 @@ Standing rules for every day, agreed on 2026-11-17. Day 2 part 1 is the first pu
 6. **Checking.** Any work or checking outside the CPU is allowed: test programs in the engine, the puzzle's example, a reference computation on the host. A wrong answer is fixed in the program.
 7. **Generality.** A program must work for the owner's input and the puzzle's example. Limits taken from those (digit counts, number of entries) may be built in, and are stated in the program's header.
 8. **Findings.** What is learned about the CPU by test programs goes into `findings/`, so later programs can start from it.
-9. **Deliverables per part.** `days/dayN/partM.vcbasm` in the style of day 1, usable in the game's Assembly Editor as it is (so a macro definition is alone on its line); `days/dayN/partM-example.vcbasm` with the puzzle's example as input; the README's Programs table; a local commit in this repository. Never pushed by the assistant.
+9. **Deliverables per part.** `days/dayN/partM.vcbasm` in the style of day 1, usable in the game's Assembly Editor as it is (so a macro definition is alone on its line), written as the README's "How a solution is written" says: an explanation and the whole program in pseudo code at the top, pseudo code before each section, and a comment on the code rows; a row in the README's Performance table (answer, ticks, engine time, size); `days/dayN/partM-example.vcbasm` with the puzzle's example as input; the README's Programs table; a local commit in this repository. Never pushed by the assistant.
 10. **Two parts.** After part 1 the answer is reported and work stops. The owner submits it and pastes part 2, which is solved under the same rules.
 
 ## How a program is run

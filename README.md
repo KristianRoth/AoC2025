@@ -30,6 +30,48 @@ The rules the puzzles are solved under are in [`RULES.md`](RULES.md).
 | `days/day2/part2.vcbasm` | Advent of Code day 2, part 2. The header says where the answer is left |
 | `days/day2/part2-example.vcbasm` | The same program with the puzzle's example as input (answer 4174379265) |
 
+## How a solution is written
+
+Every solution from day 2 on follows the same form, so it can be read without running it. (The day 1 programs came first and are shorter on comments.)
+
+- **An explanation at the top of the file:** the puzzle in two sentences, the idea the solution rests on with a worked example, where the answer is left in memory, how the input is encoded, the built-in limits, and a memory map.
+- **The whole program in pseudo code**, about twenty lines, in the same header.
+- **Pseudo code before each section** of the assembly (each loop, each subroutine), saying what that block does in terms of the variables.
+- **A comment on the code rows**, at the end of the line, in terms of the variables: `# SRC = SRC + 1`, `# word 1: A = carry + C_1 + S_1`, `# HI < C: past the end of the range`. Table and data rows say what the words are in decimal.
+- **Names over numbers:** every variable is a `pointer` with a name, every jump target a label.
+
+A comment explains what the line means for the program, not what the instruction does; what the instructions do is in [`findings/cpu-instructions.md`](findings/cpu-instructions.md).
+
+## Performance
+
+Measured in the `vcb` engine on `cpu-32bit-autorun-aoc1p1.vcb`, to the Breakpoint. The tick count is the same in the game (the game's counter shows one more). The engine runs about 6 million ticks per second on the machine these were measured on.
+
+| Program | Answer | Ticks | Engine time | Instructions run (about) | Program and data |
+|---|---|---|---|---|---|
+| Day 1 part 1 | 1031 | 43,146,512 | 7.4 s | 169,000 | 8,399 words |
+| Day 1 part 2 | 5831 | 70,339,472 | 11.6 s | 275,000 | 8,427 words |
+| Day 2 part 1, example | 1227775554 | 10,383,248 | 1.7 s | 41,000 | 633 words |
+| Day 2 part 1 | 54641809925 | 43,495,312 | 7.1 s | 170,000 | 777 words |
+| Day 2 part 2, example | 4174379265 | 19,838,992 | 3.3 s | 77,000 | 810 words |
+| Day 2 part 2 | 73694270688 | 75,753,616 | 12.3 s | 296,000 | 954 words |
+
+"Instructions run" is the tick count divided by 256, the cost of most instructions:
+
+| Instruction | Ticks |
+|---|---|
+| `lia`, `lib`, `load`, `store`, `sum`, `sub`, `and`, `or`, `xor`, `neg`, `shf` | 256 |
+| `psh` and `pop` together | 576 |
+| `jmp`, taken | 320 |
+| `jmp` with a condition, not taken | 192 |
+| `call` and `ret` together | 1,088 |
+
+Notes on the day 2 solutions:
+
+- **They never test an ID.** The input ranges hold about 2.6 million IDs. The programs generate only the invalid ones: about 1,700 are added in part 1. Checking every ID would take thousands of times longer on this CPU, which has no multiply or divide.
+- **Where the time goes.** Reaching the first invalid ID of a range is done by walking up in decimal steps (`STEP_UP`), at most nine steps per decimal digit. Each step is one 48-bit addition and one comparison, about 45 instructions. Part 2 runs longer than part 1 because it has 13 families of repeated blocks per range in place of 5.
+- **Most instructions only move data.** Loading a variable takes two instructions (`lia v; load rgA rgA`) and so does storing one. In part 2, 73% of the instructions in the code are such pairs or the carry move.
+- **Code size:** part 1 has 355 instructions and part 2 has 419; the rest of the words are the tables and the input.
+
 ## Instruction set
 
 What each instruction really does, as found by test programs, is in [`findings/cpu-instructions.md`](findings/cpu-instructions.md).
