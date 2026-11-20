@@ -12,6 +12,7 @@ The CPU's board files for the Steam game Virtual Circuit Board (Update 1.0.1), a
 | `days/day3/cpu-32bit-autorun-aoc3p2.vcb` | The same for `days/day3/part2.vcbasm`; Persistent Memory `0x0110`–`0x011E`. |
 | `days/day4/cpu-32bit-autorun-aoc4p1.vcb` | The same for `days/day4/part1.vcbasm`; Persistent Memory `0x0100`–`0x0114`. |
 | `days/day4/cpu-32bit-autorun-aoc4p2.vcb` | The same for `days/day4/part2.vcbasm`; Persistent Memory `0x0100`–`0x0114`. |
+| `days/day5/cpu-32bit-autorun-aoc5p1.vcb` | The same for `days/day5/part1.vcbasm`; Persistent Memory `0x0100`–`0x0114`. |
 
 The boards differ only in those 24 latch pixels, in the assembly text they carry, and in the Persistent Memory range.
 
@@ -41,6 +42,8 @@ The rules the puzzles are solved under are in [`RULES.md`](RULES.md).
 | `days/day4/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 13) |
 | `days/day4/part2.vcbasm` | Advent of Code day 4, part 2. The header says where the answer is left |
 | `days/day4/part2-example.vcbasm` | The same program with the puzzle's example as input (answer 43) |
+| `days/day5/part1.vcbasm` | Advent of Code day 5, part 1. The header says where the answer is left |
+| `days/day5/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 3) |
 
 ## How a solution is written
 
@@ -75,6 +78,8 @@ Measured in the `vcb` engine on `cpu-32bit-autorun-aoc1p1.vcb`, to the Breakpoin
 | Day 4 part 1 | 1505 | 481,327,888 | 91 s | 1,880,000 | 19,388 words |
 | Day 4 part 2, example | 43 | 6,508,752 | 1.5 s | 25,000 | 425 words |
 | Day 4 part 2 | 9182 | 1,339,421,264 | 4.6 min | 5,232,000 | 19,497 words |
+| Day 5 part 1, example | 3 | 437,776 | 0.01 s | 1,700 | 287 words |
+| Day 5 part 1 | 798 | 800,901,776 | 2.4 s | 3,129,000 | 5,727 words |
 
 "Instructions run" is the tick count divided by 256, the cost of most instructions:
 
@@ -111,6 +116,14 @@ Notes on the day 4 solutions:
 - **Part 2 walks the grid once.** A roll is removed the moment it is found removable, and only its neighbours that the walk has already passed are put on a to-do stack and looked at again. That is 21,385 looks at a roll; sweeping the whole grid until nothing changes would take 49 sweeps and 195,394 looks. The stack never held more than 103 addresses.
 - **Part 2 is the longest run so far** (4.6 minutes in the engine): each look still costs about 145 instructions, and each of the 9,182 removals another 170 or so to test and note its eight neighbours.
 - **Part 2's size:** 263 instructions.
+
+Notes on the day 5 solution:
+
+- **Numbers of four words.** The IDs need 49 bits, so each is four 16-bit words, and two numbers are compared from the top word down; the first pair of words that differs decides. With this input the second pair nearly always does.
+- **Every ID against every range, in the order given.** That is 106,205 tests of an ID against a range (1,000 IDs, 187 ranges, stopping at the first range that holds the ID), about 29 instructions each. Nothing is sorted: sorting and merging the ranges on this CPU would cost more than these tests save.
+- **No test for the end of the ranges.** The list ends with a range that holds every ID, so the search always stops; only then does the program look whether it stopped at that end mark.
+- **Engine time** is from 2026-11-20, when the engine ran about 340 million ticks per second on this program; the rows above were measured with the engine as it was on 2026-11-18.
+- **Size:** 197 words of code; the rest of the 5,727 words is the input.
 
 ## Instruction set
 
