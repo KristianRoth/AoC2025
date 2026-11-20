@@ -1,0 +1,637 @@
+# Advent of Code 2025, day 7 part 2 (Laboratories)
+#
+# THE PUZZLE
+# The input is a diagram. A particle starts at S and moves straight down through empty cells (.). At a
+# splitter (^) time splits: in one timeline the particle goes on from the cell left of the splitter, in
+# another from the cell right of it. The answer is the number of timelines when the particle has left
+# the diagram on every one of them.
+#
+# THE IDEA
+# Following the timelines one by one is hopeless: a real diagram has far too many. But timelines whose
+# particle is in the same cell behave the same from there on, so it is enough to know how many there
+# are in each column. NOTES has one number per column: how many timelines have the particle coming down
+# that column. The program reads the diagram row by row from the top:
+#     S in a column         that column's note = 1
+#     ^ in a column         N = that column's note. Each of the N timelines becomes two:
+#                           the notes of the columns left and right both grow by N, the column's own
+#                           note becomes 0, and there are N timelines more: TOTAL = TOTAL + N
+# TOTAL starts at 1, the one timeline at S. The example's first rows:
+#     .......S.......     notes  . . . . . . . 1 . . . . . . .     TOTAL = 1
+#     .......^.......     notes  . . . . . . 1 . 1 . . . . . .     TOTAL = 1 + 1 = 2
+#     ......^.^......     notes  . . . . . 1 . 2 . 1 . . . . .     TOTAL = 2 + 1 + 1 = 4
+#     .....^.^.^.....     notes  . . . . 1 . 3 . 3 . 1 . . . .     TOTAL = 4 + 1 + 2 + 1 = 8
+#
+# THE WHOLE PROGRAM IN PSEUDO CODE
+#     TOTAL = 0
+#     P = address of the diagram; B = address of NOTES      # B is the note for the column P is in
+#     loop:
+#         if memory[P] == 0:                    # the end of a row
+#             P = P + 1; B = address of NOTES
+#             if memory[P] == 0: break          # an empty row: the end of the diagram
+#             continue
+#         if memory[P] == 3:                    # S
+#             note at B = 1; TOTAL = 1
+#         if memory[P] == 2:                    # a splitter
+#             N = note at B
+#             if N != 0:
+#                 note at B = 0
+#                 note at B - 4 = note at B - 4 + N         # a note is four words
+#                 note at B + 4 = note at B + 4 + N
+#                 TOTAL = TOTAL + N
+#         P = P + 1; B = B + 4
+#     write TOTAL as 15 decimal digits
+#     stop
+#
+# NUMBERS OF FOUR WORDS
+# The counts outgrow the 32 bits of a register, so every note, N and TOTAL are four 16-bit words each,
+# lowest word first: N is the words N0 (lowest) to N3 (top).
+#   Adding: word by word from the lowest. Two words are added in a 32-bit register; the lower half of
+#     the sum is the result's word, the upper half is the carry into the next word.
+#   Subtracting (only for the decimal digits): the CPU cannot borrow from one word to the next, so X - Y
+#     is X + (every bit of Y flipped) + 1. The carry out of the top word is 1 exactly when X >= Y.
+#
+# THE RESULT, when the CPU stops on the Breakpoint at END
+#   0x0100-0x0103  TOTAL as four 16-bit words, lowest first
+#   0x0110-0x011E  TOTAL as 15 decimal digits, one per word, most significant first
+#
+# THE INPUT (rule 1 of RULES.md), at 0x2000, the same words as in part 1
+# One word per cell, row after row: 1 for an empty cell, 2 for a splitter, 3 for S. A word 0 ends each
+# row, and a second 0 after the last row ends the diagram.
+# Built-in limits: rows of at most 1,000 cells (NOTES); the diagram ends below 0x8000; no two splitters
+# side by side (what a splitter sends sideways would be split again in the same row); the answer is
+# below 10^15.
+#
+# THE IDIOMS (v is a variable's address, below 0x1000)
+#     getA v                   A = the word at v   (lia v; load rgA rgA: lia puts the address in A, load replaces it)
+#     getB v                   B = the word at v
+#     putA v                   the word at v = A   (this uses up B)
+#     getAat p / putAat p      the same for the word the pointer p points at
+#     copy v w                 w = v
+#     getAoff p k              A = the word at the address (p + k); p is a variable holding an address
+#     keepcarry v              v = the upper half of A: the carry of the sum just made
+#     if_eq L / if_neq L       compares A with B as they are now
+# P, B and T are pointers: variables that hold an address.
+# What each instruction does exactly is in findings/cpu-instructions.md.
+#
+# MEMORY MAP
+#   0x0100-0x0145  variables            0x1E00-  POWERS: 10^14 down to 1, four words each, then 0
+#   0x1000-        the program          0x2000-  the diagram (142 rows of 141 end at 0x6EC4)
+#   0x1800-        the subroutines      0x8000-  NOTES, four words per column, all 0 at the start; the first
+#   0xFF00         where the CPU starts          column's note is at 0x8004 (0x8000 is for "left of the first column")
+
+# ---- The CPU's instructions as symbols (day 1's table without its _32 names, which the CPU ignores) ----
+symbol nop 0b0000_0000_0000_0000            # the word 0: stops the CPU (the same word as non)
+symbol ld  0b0010_0000_0000_0000            # load a register from memory (used through the load macro)
+symbol lia 0b0011_0000_0000_0000            # lia n: A = n (0 to 4095), upper half 0
+symbol lib 0b0100_0000_0000_0000            # lib n: B = n (0 to 4095), upper half 0
+symbol sto 0b0101_0000_0000_0000            # store a register to memory (used through the store macro)
+
+macro  load  { ld  | a? | (b? >> 6) }       # load X Y: X = the word at the address in Y
+macro  store { sto | a? | (b? >> 6) }       # store X Y: the word at the address in Y = X
+
+symbol sum    0b0110_0100_0000_0000         # A = A + B (32 bits), sets zero, carry, nega
+symbol sub    0b0110_0010_0000_0000         # A = A - B (32 bits), sets zero, carry, nega
+symbol shf    0b0110_0001_0000_0000         # shf | k: A = A shifted left by k (0 to 15)
+symbol and    0b0110_0000_1000_0000         # A = A and B
+symbol or     0b0110_0000_0100_0000         # A = A or B
+symbol xor    0b0110_0000_0010_0000         # A = A xor B
+symbol neg    0b0110_0000_0001_0000         # A = every bit of A flipped
+
+symbol psh 0b1010_0000_0000_0000            # psh X: push the 16 bits of X
+symbol pop 0b1011_0000_0000_0000            # pop X: pop 16 bits into X
+
+symbol jmp  0b1100_0000_0000_0000           # jmp; L: go to L.  jmp c; L: go to L when c holds
+symbol call 0b1110_0000_0000_0000           # call; L: run the subroutine at L
+symbol ret  0b1111_0000_0000_0000           # return from a subroutine
+
+# The registers, as load, store, psh and pop name them
+symbol rgAH 0b1000_0000_0000                # the upper 16 bits of A
+symbol rgA  0b0100_0000_0000                # the lower 16 bits of A
+symbol rgBH 0b0010_0000_0000                # the upper 16 bits of B
+symbol rgB  0b0001_0000_0000                # the lower 16 bits of B
+symbol rgSP 0b0000_1000_0000                # the program counter (leave alone)
+symbol rgSB 0b0000_0100_0000                # the stack pointer (leave alone)
+symbol non  0                               # stops the CPU (Breakpoint): the end of the program
+
+# The conditions of jmp
+symbol zero  0b1000_0000_0000               # the last sum or sub gave 0
+symbol carry 0b0100_0000_0000               # the last sum carried, or the last sub did not borrow (A >= B)
+symbol nega  0b0010_0000_0000               # the last sub went below 0 (A < B)
+symbol eq    0b0001_0000_0000               # A == B right now
+symbol neq   0b0000_1000_0000               # A != B right now
+
+# ---- Macros for the common operations (explained in the README). A macro cannot use another macro, so
+#      load and store are spelled out here. v: a variable, p: a variable holding an address, L: a label ----
+macro getA     { lia a?; ld | rgA | (rgA >> 6) }                                              # A = v
+macro getB     { lib a?; ld | rgB | (rgB >> 6) }                                              # B = v
+macro putA     { lib a?; sto | rgA | (rgB >> 6) }                                             # v = A (uses B)
+macro getAat   { lia a?; ld | rgA | (rgA >> 6); ld | rgA | (rgA >> 6) }                       # A = the word p points at
+macro putAat   { lib a?; ld | rgB | (rgB >> 6); sto | rgA | (rgB >> 6) }                      # the word p points at = A (uses B)
+macro inc      { lia a?; ld | rgA | (rgA >> 6); lib 1; sum; lib a?; sto | rgA | (rgB >> 6) }  # v = v + 1 (uses A and B)
+macro goto     { jmp; a? }                                                                    # go to L
+macro if_eq    { jmp eq; a? }                                                                 # go to L when A == B
+macro do       { call; a? }                                                                   # call the subroutine L
+macro if_carry { jmp carry; a? }                                                              # go to L after a sub when A >= B
+macro getAoff  { lia a?; ld | rgA | (rgA >> 6); lib b?; sum; ld | rgA | (rgA >> 6) }                # A = the word at (p + k) (uses B)
+macro copy     { lia a?; ld | rgA | (rgA >> 6); lib b?; sto | rgA | (rgB >> 6) }                      # w = v (uses A and B)
+macro keepcarry { psh rgAH; pop rgB; lia a?; sto | rgB | (rgA >> 6) }                                 # v = the upper half of A (uses A and B)
+macro if_neq   { jmp neq; a? }                                                                # go to L when A != B
+
+
+# ---- Variables (all below 0x1000, so lia/lib can address them). A number is four words, 0 the lowest ----
+# The result: the number of timelines so far
+pointer TOTAL0 0x0100 0
+pointer TOTAL1 0x0101 0
+pointer TOTAL2 0x0102 0
+pointer TOTAL3 0x0103 0
+# N: the note of the splitter's column, the number of timelines that are split there
+pointer N0 0x0120 0
+pointer N1 0x0121 0
+pointer N2 0x0122 0
+pointer N3 0x0123 0
+# SUBTRACT works out DIFF = X - Y (for the decimal digits)
+pointer X0 0x0128 0
+pointer X1 0x0129 0
+pointer X2 0x012A 0
+pointer X3 0x012B 0
+pointer Y0 0x012C 0
+pointer Y1 0x012D 0
+pointer Y2 0x012E 0
+pointer Y3 0x012F 0
+pointer DIFF0 0x0130 0
+pointer DIFF1 0x0131 0
+pointer DIFF2 0x0132 0
+pointer DIFF3 0x0133 0
+# The carry from one word of an addition into the next
+pointer CARRY 0x0138 0
+# P: the address of the cell being looked at. B: the address of the note for P's column.
+pointer P 0x0139 0x2000
+pointer B 0x013A 0x8004
+# T: the address of the word ADD_N is adding to
+pointer T 0x013B 0
+# For the decimal digits: how often the current power of ten fitted
+pointer DIGIT_VALUE 0x0141 0
+# Pointers: DIGIT the next digit to write, POW the next power of ten
+pointer DIGIT 0x0142 0x0110
+pointer POW 0x0143 0x1E00
+# Constants that do not fit an instruction's place for a number: the address of the first column's note, and 0xFFFF
+pointer NOTES 0x0144 0x8004
+pointer ALL_ONES 0x0145 0xFFFF
+
+# ---- The CPU starts at 0xFF00 ----
+origin 0xFF00
+goto MAIN
+
+origin 0x1000
+@ MAIN
+# ==== look at the next cell ====
+#     if memory[P] == 0: goto END_OF_ROW
+#     if memory[P] == 1: goto STEP_ON           # an empty cell
+#     if memory[P] == 3: goto START             # S
+#     otherwise it is a splitter
+@ NEXT_CELL
+	getAat P                                                     # A = memory[P]
+	lib 0                                                        # B = 0
+	if_eq END_OF_ROW
+	lib 1                                                        # B = 1, an empty cell
+	if_eq STEP_ON
+	lib 3                                                        # B = 3, the S
+	if_eq START
+
+# ==== a splitter ====
+#     N = the note at B
+#     if N == 0: goto STEP_ON                   # no timeline has the particle here
+#     the note at B = 0
+#     T = B - 4; ADD_N                          # the note of the column to the left grows by N
+#     T = B + 4; ADD_N                          # the note of the column to the right grows by N
+#     T = address of TOTAL; ADD_N               # TOTAL = TOTAL + N
+@ SPLITTER
+	getAat B; putA N0                                            # N = the note at B; word 0 (the lowest)
+	getAoff B 1; putA N1                                         # word 1
+	getAoff B 2; putA N2                                         # word 2
+	getAoff B 3; putA N3                                         # word 3 (the top)
+	getB N2; sum; getB N1; sum; getB N0; sum                     # A = N3 + N2 + N1 + N0, which is 0 only when all four are
+	lib 0                                                        # B = 0
+	if_eq STEP_ON                                                # N == 0: nothing is split
+	lia 0; putAat B                                              # the note at B = 0; word 0 (the lowest)
+	getA B; lib 1; sum; lib 0; store rgB rgA                     # word 1: memory[B + 1] = 0
+	getA B; lib 2; sum; lib 0; store rgB rgA                     # word 2
+	getA B; lib 3; sum; lib 0; store rgB rgA                     # word 3 (the top)
+	getA B; lib 4; sub; putA T                                   # T = B - 4, the note of the column to the left
+	do ADD_N                                                     # that note grows by N
+	getA B; lib 4; sum; putA T                                   # T = B + 4, the note of the column to the right
+	do ADD_N                                                     # that note grows by N
+	lia TOTAL0; putA T                                           # T = the address of TOTAL
+	do ADD_N                                                     # TOTAL = TOTAL + N
+	goto STEP_ON
+
+# ==== the S: the particle starts here ====
+#     the note at B = 1; TOTAL = 1              # the words above the lowest are 0 already
+@ START
+	lia 1; putAat B                                              # the lowest word of the note at B = 1
+	putA TOTAL0                                                  # the lowest word of TOTAL = 1 (A still holds 1)
+
+# ==== the next cell of the row ====
+#     P = P + 1; B = B + 4
+@ STEP_ON
+	inc P                                                        # P = P + 1
+	getA B; lib 4; sum; putA B                                   # B = B + 4, the next column's note
+	goto NEXT_CELL
+
+# ==== the end of a row ====
+#     P = P + 1                                 # step over the 0
+#     B = address of NOTES                      # back to the first column
+#     if memory[P] == 0: goto ALL_ROWS_DONE     # a second 0: the end of the diagram
+@ END_OF_ROW
+	getA NOTES; putA B                                           # B = the address of the first column's note
+	inc P                                                        # P = P + 1
+	load rgA rgA                                                 # A = memory[P]   (A still held P)
+	lib 0                                                        # B = 0
+	if_eq ALL_ROWS_DONE
+	goto NEXT_CELL
+
+# ==== write TOTAL as 15 decimal digits ====
+# A digit is how often a power of ten fits into what is left. Without division that is counting.
+# X is what is left of the total, Y the power of ten:
+#     X = TOTAL
+#     for Y in 10^14, 10^13, ..., 10, 1:                # the table ends at a number whose lowest word is 0
+#         DIGIT_VALUE = 0
+#         loop:
+#             SUBTRACT                                  # DIFF = X - Y, CARRY = 1 when X >= Y
+#             if CARRY == 0: break
+#             X = DIFF; DIGIT_VALUE = DIGIT_VALUE + 1
+#         memory[DIGIT] = DIGIT_VALUE; DIGIT = DIGIT + 1
+# (The lowest word of a power of ten up to 10^15 is never 0, so a 0 there can end the table.)
+@ ALL_ROWS_DONE
+	copy TOTAL0 X0                                               # X = TOTAL; word 0 (the lowest)
+	copy TOTAL1 X1                                               # word 1
+	copy TOTAL2 X2                                               # word 2
+	copy TOTAL3 X3                                               # word 3 (the top)
+@ NEXT_POWER
+	getAat POW                                                   # A = the lowest word of the next power of ten
+	lib 0                                                        # B = 0
+	if_eq END                                                    # a lowest word of 0 ends the table
+	putA Y0                                                      # Y = the power of ten; word 0 (the lowest)
+	getAoff POW 1; putA Y1                                       # word 1
+	getAoff POW 2; putA Y2                                       # word 2
+	getAoff POW 3; putA Y3                                       # word 3 (the top)
+	getA POW; lib 4; sum; putA POW                               # POW = POW + 4
+	lia 0; putA DIGIT_VALUE                                      # DIGIT_VALUE = 0
+@ FITS_AGAIN
+	do SUBTRACT                                                  # DIFF = X - Y, CARRY = 1 when X >= Y
+	getA CARRY; lib 0                                            # A = CARRY, B = 0
+	if_eq WRITE_DIGIT                                            # X < Y: the power does not fit again
+	copy DIFF0 X0                                                # X = DIFF; word 0 (the lowest)
+	copy DIFF1 X1                                                # word 1
+	copy DIFF2 X2                                                # word 2
+	copy DIFF3 X3                                                # word 3 (the top)
+	inc DIGIT_VALUE                                              # DIGIT_VALUE = DIGIT_VALUE + 1
+	goto FITS_AGAIN
+@ WRITE_DIGIT
+	getA DIGIT_VALUE; putAat DIGIT                               # memory[DIGIT] = DIGIT_VALUE
+	inc DIGIT                                                    # DIGIT = DIGIT + 1
+	goto NEXT_POWER
+
+# The word 0 stops the CPU on its Breakpoint.
+@ END
+	non
+
+# ---- Subroutines ----
+origin 0x1800
+# ADD_N: the number of four words at the address in T grows by N.
+#     CARRY = 0
+#     for k in 0, 1, 2, 3:
+#         A = memory[T] + Nk + CARRY
+#         memory[T] = the lower half of A; CARRY = the upper half of A
+#         T = T + 1
+@ ADD_N
+	lia 0; putA CARRY                                            # CARRY = 0
+	getAat T; getB N0; sum; getB CARRY; sum; putAat T; keepcarry CARRY; inc T # word 0: memory[T] = memory[T] + N0 + carry; T = T + 1
+	getAat T; getB N1; sum; getB CARRY; sum; putAat T; keepcarry CARRY; inc T # word 1
+	getAat T; getB N2; sum; getB CARRY; sum; putAat T; keepcarry CARRY; inc T # word 2
+	getAat T; getB N3; sum; getB CARRY; sum; putAat T            # word 3 (the top)
+	ret
+
+# SUBTRACT: DIFF = X - Y, and CARRY = 1 when X >= Y (0 when X < Y; DIFF is then of no use).
+# Done as X + (Y with every bit flipped) + 1, word by word from the lowest:
+#     CARRY = 1                                         # the "+ 1"
+#     for k in 0, 1, 2, 3:
+#         A = (0xFFFF - Yk) + Xk + CARRY                # at most 0x1FFFF
+#         DIFFk = the lower half of A; CARRY = the upper half of A
+# X and Y are left as they were.
+@ SUBTRACT
+	lia 1; putA CARRY                                            # CARRY = 1
+	getA ALL_ONES; getB Y0; sub; getB X0; sum; getB CARRY; sum; putA DIFF0; keepcarry CARRY # word 0: DIFF0 = (0xFFFF - Y0) + X0 + carry
+	getA ALL_ONES; getB Y1; sub; getB X1; sum; getB CARRY; sum; putA DIFF1; keepcarry CARRY # word 1
+	getA ALL_ONES; getB Y2; sub; getB X2; sum; getB CARRY; sum; putA DIFF2; keepcarry CARRY # word 2
+	getA ALL_ONES; getB Y3; sub; getB X3; sum; getB CARRY; sum; putA DIFF3; keepcarry CARRY # word 3: its carry is 1 when X >= Y
+	ret
+
+# ---- Powers of ten for the decimal digits: 10^14 down to 1, four words each, lowest first; then 0 ----
+origin 0x1E00
+0x4000; 0x107A; 0x5AF3; 0x0000    # 100000000000000
+0xA000; 0x4E72; 0x0918; 0x0000    # 10000000000000
+0x1000; 0xD4A5; 0x00E8; 0x0000    # 1000000000000
+0xE800; 0x4876; 0x0017; 0x0000    # 100000000000
+0xE400; 0x540B; 0x0002; 0x0000    # 10000000000
+0xCA00; 0x3B9A; 0x0000; 0x0000    # 1000000000
+0xE100; 0x05F5; 0x0000; 0x0000    # 100000000
+0x9680; 0x0098; 0x0000; 0x0000    # 10000000
+0x4240; 0x000F; 0x0000; 0x0000    # 1000000
+0x86A0; 0x0001; 0x0000; 0x0000    # 100000
+0x2710; 0x0000; 0x0000; 0x0000    # 10000
+0x03E8; 0x0000; 0x0000; 0x0000    # 1000
+0x0064; 0x0000; 0x0000; 0x0000    # 100
+0x000A; 0x0000; 0x0000; 0x0000    # 10
+0x0001; 0x0000; 0x0000; 0x0000    # 1
+0
+
+
+# ---- The diagram: 142 rows of 141 cells ----
+# One word per cell: 1 = empty, 2 = a splitter, 3 = S; a 0 ends each row; one more 0 ends the diagram.
+origin 0x2000
+# row 1: ......................................................................S......................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 3; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 2: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 3: ......................................................................^......................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 4: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 5: .....................................................................^.^.....................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 6: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 7: ....................................................................^...^....................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 8: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 9: ...................................................................^.^...^...................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 10: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 11: ..................................................................^.....^.^..................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 12: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 13: .................................................................^.^.^.^.^.^.................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 14: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 15: ................................................................^.^.^...^.^.^................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 16: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 17: ...............................................................^.^.^.^.^.^.^.^...............................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 18: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 19: ..............................................................^.^.^.^.^.....^.^..............................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 20: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 21: .............................................................^.^.^.^.^.^.^.^.^.^.............................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 22: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 23: ............................................................^.^.....^.^.^.^.^.^.^............................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 24: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 25: ...........................................................^...^.^...^.^.^...^.^.^...........................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 26: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 27: ..........................................................^.^.^.^.^.^...^.^.^...^.^..........................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 28: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 29: .........................................................^...^.....^.^...^.^.^.^.^.^.........................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 30: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 31: ........................................................^.^...^.^...^.^.^.^.^.^...^.^........................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 32: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 33: .......................................................^...^.^...^.^...^.^...^.....^.^.......................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 34: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 35: ......................................................^...^...^.^...^.^.^.^.^.^.^.^...^......................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 36: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 37: .....................................................^.^.^.^.^.^.^...^.^.^.^...^.^.^.^.^.....................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 38: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 39: ....................................................^.^.^...^.^...^.^...^.^.^.^.^.^.^...^....................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 40: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 41: ...................................................^.^.^.^.^.^.^...^.^.^.^.^.^.....^.^.^.^...................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 42: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 43: ..................................................^.^...^.^.^.....^...^...^.^...^.^...^...^..................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 44: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 45: .................................................^.......^.^.^.....^.^.^.^.^.^.^.^...^...^.^.................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 46: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 47: ................................................^...^.^.^...^.^.^.^.^.^.^.^.^.^.^.^.^.^.^.^.^................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 48: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 49: ...............................................^.^.....^.^.^.^...^.^.^.^.^...^...^...^.^.....^...............................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 50: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 51: ..............................................^...^...^.^.^...^...^.....^.^.......^.....^.....^..............................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 52: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 53: .............................................^.^.^.....^.^.....^.^.....^.......^.^.^.^.^.^.^.^.^.............................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 54: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 55: ............................................^.^.....^.^.^.........^.^...^.^...^...^.^.^.^...^...^............................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 56: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 57: ...........................................^.^.....^.......^.^.^...^.^.^.^.^.^.^.....^...^.^...^.^...........................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 58: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 59: ..........................................^.^.....^.^.^.^...^.^...^.^.^.^.^.^.^.....^.^.^...^...^.^..........................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 60: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 61: .........................................^.^.....^.^.......^.........^.^.^.^...^.^.^.^...^.^.....^.^.........................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 62: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 63: ........................................^.^.^.^...^...^...^.^.^.^.^.^.^.^.^.^...^.....^.^.^.^.^.^...^........................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 64: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 65: .......................................^.....^.^.^.......^.^...^.....^.^.^...^...^.^.^.^.^.^.^.^.^...^.......................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 66: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 67: ......................................^.^.....^...^.^.^.^.^...^.^.^.....^.^.....^.^.^.^.^...^.^.^.^...^......................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 68: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 69: .....................................^.^...^.^.^.^.^.^.^.^.^.^.^.^.^.^...^.^.^.^.^.^...^.^.........^.^.^.....................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 70: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 71: ....................................^.^.^.^.^.^.^.^.^.....^.^.^...^...^...^.^.....^.^.^...^.^...^...^.^.^....................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 72: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 73: ...................................^.^.....^.^.^...^...^.^...^...^.......^.^.^.^.^.^.^...^.^.^.^.^.^.^.^.^...................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 74: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 75: ..................................^.^.^.^.^.^.^.^.^.^...^.^...^...^.^.^.^.^.^.^.^.....^.^.^...^.....^.^...^..................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 76: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 77: .................................^.^.^.^.......^...^.^.^...^.^.^.....^.^...^.^.^.^...^.^.^.^...^.^.^.^...^.^.................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 78: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 79: ................................^.^.^.........^.^...^.^...^.^.^.^.^...^.^...^.^.....^...^.^.^...^...^.^...^.^................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 80: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 81: ...............................^.....^.^.....^.^.^.^.....^.^.^.^.^.^.^.^.^.....^.....^.^...^.....^.^.^.^.^.^.^...............................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 82: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 83: ..............................^.^.^.^.^.^.....^.^.^.^.^.....^.^.^.^.^.^.....^...^.^...^.^.^.^.^.^.^...^.^.^...^..............................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 84: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 85: .............................^...^...^.^.^.^...^.^.......^.^...^...^.^...^.^.^.^...^...^.^.^.....^.^.^...^.^.^.^.............................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 86: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 87: ............................^...^.^...^.^.^.^...^.^...^...........^.^.^.^.^.^.....^.^.^.^.^.^.^.^.^...^.....^.^.^............................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 88: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 89: ...........................^.^...^.^.^...^.^.^.^.^.^.^.^.....^.^.^.^.^.^.^.^.^.^.^.^.^.^.^.^.^.^...^.^.^.^.^.^.^.^...........................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 90: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 91: ..........................^.^.^...^.^...^.^.^...^...^.^.^.^.^...^.^.^.^.^.^.^...^.^.^.^.^.^.^.^.^...^.^.^.....^.^.^..........................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 92: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 93: .........................^...^...^.^.^.^.^...^...^.......^.^...^.^...^.^.^...^.^.^.^...^.^.^.^...^.^...^.^...^.^.^.^.........................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 94: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 95: ........................^.^.^.^.^.^.^...^...^.^.^...^.^.^.^.^.^...^...^...^.^.^.....^.^...^.^...^.^.^.^.^.......^.^.^........................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 96: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 97: .......................^.^.^.^.^.^.^.^.........^.^.^.^...^.^...^...^.^.^.^.^...^.^...^.^.^...^...^.^.^.^...^.^.^.^...^.......................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 98: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 99: ......................^.^.^.^.......^.^.^.^.^...^...^...^.^.^...^.....^.^.^...........^.^.^.^.^...^.^.^.^.^.^.^...^.^.^......................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 100: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 101: .....................^.^.^...^...^...^.........^...^.^...^.^.^...^.^.^.^...^.^.^...^.^...^...^...^...^.^.^.....^.^.^...^.....................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 102: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 103: ....................^.^.^.....^.^.^...^...^.^.^.^.^.^.^.^.^.^.^.....^...........^...^.^.^.^.^.^.^...^.....^.^...^...^.^.^....................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 104: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 105: ...................^.....^.....^.......^.^.^.^.^.^.^.^.^.^.....^.^.^.^.^.^.......^...^.^.^...^.^.^.^.^.^.^.^.^.....^.^...^...................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 106: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 107: ..................^.^.^...^.^.^.^.^...^.^.^...^.^.^.^.^.^.^.^.^...^.^.^.^.^...^...^...^.^.^.^.^...^.^...^...^.^.^...^...^.^..................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 108: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 109: .................^.^.^.^.^.^...^.^.^.^.^.^...^.^.^.^.^...^.......^...^.^.^.^.^...^.^.^.^.^.^.^.^.^.^.^...^.^.^.^...^...^.^.^.................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 110: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 111: ................^...^.^.^.^.^...^...^.^...^...^.^.^...^.^.^.^.^.^.^.^.^.^.^.^.^.^.^.^.^.^.^.^...^...^.^.^.^.^.....^.^.^.^.^.^................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 112: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 113: ...............^.....^.^.^.^.^.......^.^.^...^.^.^.^.^.^...^.^.^.^.^.....^.^.^.....^.^.^.^...^.....^.^.^...^.^...^.^.^.^.^...^...............
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 114: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 115: ..............^.^.^.^.^.^.^...^.^.^.^.^.^.^.^.^.^.^...^.^...^.^.......^.^.^.^.....^...^.........^.....^...^.^.^.^.^...^.^.^.^.^..............
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 116: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 117: .............^.^.^...^.....^.....^...^.^...^.^...^.^.^.^.^.^.^.^...^.^.^...^.^...^.....^.^.^.^.^.^...^.^...^.^...^.^.^.^.^.....^.............
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 118: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 119: ............^.^.^...^.^.^.^.^.^.^...^.^...^...^.^.^.^.^.^...^...^.^.^.^...^.^.^.^.....^.....^.^...^...^...^.^.^.^.^.^.......^.^.^............
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 120: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 121: ...........^...^.^...^.^.^.^.^.^...^.^.^.^.^.^.^.^.^.^.^.^...........^.^...^.^...^...^.^.^.^.^.^...^.....^.......^.^.^.^...^...^.^...........
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 122: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 123: ..........^.^.^.^...^...^...^.^.^.....^.^...^.^.^.^...^.^...^.^.^.^...^.^.....^.^...^.^.^.^...^.^.^.^.^...^...^.^.^.^.^.^...^.^.^.^..........
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 124: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 125: .........^.....^...^.^...^.^.^.^.^.^.^...^.^...^.^.^.^.^...^...^.......^.^...^.^.^.^.^.^.^.....^...^.....^.^.^.^.^.^.^.^.^...^.^.^.^.........
+1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 126: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 127: ........^.^.^.^.^...^...^.^.^...^.^.^.^...^.^.^.^...^.^...^.^.^.^.....^.^.^.^.....^.^.^.....^.^.^.^...^.^...^.....^.^.^.^.^.^...^.^.^........
+1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 128: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 129: .......^.^.......^.....^.^.^.^...^.^.^.^.^...^.....^.^.^.^.^.^.^.^.^.^...^.....^...^.^...^.^.^.^...^.^.^.......^.^...^.........^.^.^.^.......
+1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 0
+# row 130: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 131: ......^.^...^.....^.^.^.^...^.^.^.^.^.^...^.......^.....^.^.....^.^.^...^.^.^.^...^.^.^.^.^...^.^.^.^.^...^.^.^.^.....^.....^.^.^.^.^.^......
+1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 0
+# row 132: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 133: .....^.^.^.^.....^...^.^.^.^.^.....^...^.^...^.^.^.^...^.^.^.....^.^...^...^.^.^.^.....^.^.......^...^...^.^.......^.....^.^...^.^.^.^.^.....
+1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 0
+# row 134: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 135: ....^.^.....^.^.^.^...^.^.....^.....^.^.^.^.^.^.^.^.^.^.....^.^.^.^.^...^.^.^.^...^.^.^.^.^.^...^...^...^.^.^...^.....^...^...^...^.....^....
+1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 0
+# row 136: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 137: ...^...^.^.^.^.^...^...^.^.^.^.^...^.^.^...^.^.^.^...^...^.^.^.^...^...^...^...^.^.^.^.^.........^.....^...^.^...^.........^.^.^...^...^.^...
+1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 0
+# row 138: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 139: ..^.^.....^.^.^.......^...^.^.^...^.^.....^.^...^.^...^.....^.^.....^.^.^...^...^.^.^...^.^.....^.....^...^...^.^.^...^.^.^.^.^...^.^.^.^.^..
+1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 0
+# row 140: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+# row 141: .^.^.^.^.^.^.^...^.^...^.^...^.^.....^.....^.^.^.^.^.^.^.^.^...^.^...^...^.....^.^.^.^.^...^.^.^.^...^.^.^.^.^.^.......^.^...^.^.^.^.^...^.^.
+1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 1; 1; 2; 1; 1; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 1; 1; 1; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 2; 1; 2; 1; 2; 1; 1; 1; 2; 1; 2; 1; 0
+# row 142: .............................................................................................................................................
+1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 1; 0
+0

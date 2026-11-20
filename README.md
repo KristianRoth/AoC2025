@@ -17,6 +17,7 @@ The CPU's board files for the Steam game Virtual Circuit Board (Update 1.0.1), a
 | `days/day6/cpu-32bit-autorun-aoc6p1.vcb` | The same for `days/day6/part1.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
 | `days/day6/cpu-32bit-autorun-aoc6p2.vcb` | The same for `days/day6/part2.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
 | `days/day7/cpu-32bit-autorun-aoc7p1.vcb` | The same for `days/day7/part1.vcbasm`; Persistent Memory `0x0100`–`0x0114`. |
+| `days/day7/cpu-32bit-autorun-aoc7p2.vcb` | The same for `days/day7/part2.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
 
 The boards differ only in those 24 latch pixels, in the assembly text they carry, and in the Persistent Memory range.
 
@@ -56,6 +57,8 @@ The rules the puzzles are solved under are in [`RULES.md`](RULES.md).
 | `days/day6/part2-example.vcbasm` | The same program with the puzzle's example as input (answer 3263827) |
 | `days/day7/part1.vcbasm` | Advent of Code day 7, part 1. The header says where the answer is left |
 | `days/day7/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 21) |
+| `days/day7/part2.vcbasm` | Advent of Code day 7, part 2. The header says where the answer is left |
+| `days/day7/part2-example.vcbasm` | The same program with the puzzle's example as input (answer 40) |
 
 ## How a solution is written
 
@@ -100,6 +103,8 @@ Measured in the `vcb` engine on `cpu-32bit-autorun-aoc1p1.vcb`, to the Breakpoin
 | Day 6 part 2 | 8342588849093 | 613,674,000 | 2.4 s | 2,397,000 | 19,370 words |
 | Day 7 part 1, example | 21 | 1,541,584 | 0.01 s | 6,000 | 402 words |
 | Day 7 part 1 | 1660 | 117,191,312 | 0.4 s | 458,000 | 20,310 words |
+| Day 7 part 2, example | 40 | 3,740,432 | 0.03 s | 15,000 | 733 words |
+| Day 7 part 2 | 305999729392659 | 250,336,656 | 0.9 s | 978,000 | 20,641 words |
 
 "Instructions run" is the tick count divided by 256, the cost of most instructions:
 
@@ -158,11 +163,15 @@ Notes on the day 6 solutions:
 - **Part 2's time** is the same multiplications as part 1 plus reading 3,730 columns of four characters, about 120 instructions a column.
 - **Part 2's size:** about 720 words of code, variables and the powers of ten; the rest of the 19,370 words is the worksheet, one word per character.
 
-Notes on the day 7 solution:
+Notes on the day 7 solutions:
 
 - **One row of notes.** Beams only move down, so the program keeps one word per column that says whether a beam is coming down it, and reads the diagram once from the top. A splitter under a beam is counted, clears its column's note and sets the notes left and right; setting a note that is set already is how two beams merge.
 - **Where the time goes.** 18,261 of the 20,022 cells are empty and cost about 19 instructions each (reading the cell and stepping two pointers); a splitter that splits costs about 45.
 - **Size:** 128 words of code; the rest of the 20,310 words is the diagram, one word per cell.
+- **Part 2 counts timelines per column, never one by one.** The note of a column is now a number of four words: how many timelines have the particle coming down that column. A splitter adds its column's number to the notes left and right and clears its own. The same pass over the diagram as part 1 gives an answer of 15 digits.
+- **Part 2 needs no sum at the end.** Every split of N timelines makes N more, so the total starts at 1 and grows by N at each splitter. The one subroutine that adds N to a number of four words serves the two notes and the total.
+- **Part 2's time:** an empty cell costs about 19 instructions as in part 1; each of the 1,660 splitters that are reached costs about 290, for three additions of four words.
+- **Part 2's size:** about 460 words of code, variables and the powers of ten; the rest of the 20,641 words is the diagram.
 
 ## Instruction set
 
