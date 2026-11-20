@@ -1,0 +1,387 @@
+# Advent of Code 2025, day 5 part 2 (Cafeteria), with the puzzle's example as input (answer 14)
+#
+# THE PUZZLE
+# The input is a list of ranges of fresh ingredient IDs (3-5 means 3, 4 and 5; ranges may overlap). The
+# answer is how many different IDs lie in at least one range. The list of available IDs of part 1 is
+# not used.
+#
+# THE IDEA
+# Count from the smallest ID upwards and never count an ID twice. NEXT is the first ID that has not
+# been dealt with yet: every fresh ID below NEXT is in the total. One step:
+#     - Throw out the ranges that end below NEXT: all their IDs are counted.
+#     - Of the others take the one that begins first, LOW-HIGH. No uncounted fresh ID lies before it.
+#     - Its uncounted part runs from START = the larger of LOW and NEXT up to HIGH. Add its length,
+#       HIGH + 1 - START, to the total, and set NEXT = HIGH + 1.
+# When no range is left the total is the answer. The example (3-5, 10-14, 16-20, 12-18):
+#     NEXT = 0     take 3-5       START = 3     TOTAL = 0 + 6 - 3 = 3       NEXT = 6
+#     NEXT = 6     take 10-14     START = 10    TOTAL = 3 + 15 - 10 = 8     NEXT = 15
+#     NEXT = 15    take 12-18     START = 15    TOTAL = 8 + 19 - 15 = 12    NEXT = 19
+#     NEXT = 19    take 16-20     START = 19    TOTAL = 12 + 21 - 19 = 14   NEXT = 21
+#     NEXT = 21    no range ends at 21 or above: the answer is 14
+# Nothing is sorted and the ranges are not changed. A step reads every range once; there are at most as
+# many steps as ranges (4 for this input, with 4 ranges).
+#
+# THE WHOLE PROGRAM IN PSEUDO CODE
+#     TOTAL = 0; NEXT = 0
+#     loop:
+#         BEST_LOW = the largest number there is            # "no range found yet"
+#         for each range LOW-HIGH:                          # the list ends at a HIGH whose top word is 0xFFFF
+#             if HIGH < NEXT: continue                      # counted already
+#             if LOW >= BEST_LOW: continue                  # does not begin earlier than the best so far
+#             BEST_LOW = LOW; BEST_HIGH = HIGH
+#         if BEST_LOW is still the largest number: break    # no range left
+#         START = NEXT; if BEST_LOW >= NEXT: START = BEST_LOW
+#         NEXT = BEST_HIGH + 1
+#         TOTAL = TOTAL + (NEXT - START)
+#     write TOTAL as 15 decimal digits
+#     stop
+#
+# NUMBERS OF FOUR WORDS
+# The IDs have up to 15 decimal digits, more than the 32 bits of a register. So every number is four
+# 16-bit words, lowest word first; the variable NEXT is the words NEXT0 (lowest) to NEXT3 (top).
+#   Comparing: like two words in a dictionary. Look at the top words; only when they are equal look at
+#     the next ones. The first pair that differs decides.
+#   Adding: word by word from the lowest. Two words are added in a 32-bit register; the lower half of
+#     the sum is the result's word, the upper half is the carry into the next word.
+#   Subtracting: the CPU cannot borrow from one word to the next, so X - Y is done as an addition:
+#     X + (every bit of Y flipped) + 1. Flipping a word is 0xFFFF - the word. The carry out of the top
+#     word is 1 exactly when X >= Y, which also makes SUBTRACT a comparison.
+#
+# THE RESULT, when the CPU stops on the Breakpoint at END
+#   0x0100-0x0103  TOTAL as four 16-bit words, lowest first
+#   0x0110-0x011E  TOTAL as 15 decimal digits, one per word, most significant first
+#
+# THE INPUT (rule 1 of RULES.md), at 0x2000, the same words as in part 1
+# Eight words per range: LOW (four words, lowest first), then HIGH. 484155089502467 =
+# 0x0001_B856_1F05_6503 is stored as 0x6503; 0x1F05; 0xB856; 0x0001. After the last range comes the end
+# mark: 0, 0, 0, 0 and four words 0xFFFF.
+# Built-in limits: every number is below 0xFFFF_0000_0000_0000 (so its top word is never 0xFFFF); in a
+# range, LOW is not above HIGH; the answer is below 10^15 (15 digits).
+#
+# THE IDIOMS (v is a variable's address, below 0x1000)
+#     getA v                   A = the word at v   (lia v; load rgA rgA: lia puts the address in A, load replaces it)
+#     getB v                   B = the word at v
+#     putA v                   the word at v = A   (this uses up B)
+#     copy v w                 w = v
+#     getAoff p k              A = the word at the address (p + k); p is a variable holding an address
+#     keepcarry v              v = the upper half of A: the carry of the sum just made
+#     if_eq L / if_neq L       compares A with B as they are now
+#     sub; if_carry L          after A - B: taken when A >= B
+# What each instruction does exactly is in findings/cpu-instructions.md.
+#
+# MEMORY MAP
+#   0x0100-0x0145  variables            0x1E00-  POWERS: 10^14 down to 1, four words each, then 0
+#   0x1000-        the program          0x2000-  the ranges (4 and the end mark end at 0x2027)
+#   0x1800-        the subroutine       0xFF00   where the CPU starts
+
+# ---- The CPU's instructions as symbols (day 1's table without its _32 names, which the CPU ignores) ----
+symbol nop 0b0000_0000_0000_0000            # the word 0: stops the CPU (the same word as non)
+symbol ld  0b0010_0000_0000_0000            # load a register from memory (used through the load macro)
+symbol lia 0b0011_0000_0000_0000            # lia n: A = n (0 to 4095), upper half 0
+symbol lib 0b0100_0000_0000_0000            # lib n: B = n (0 to 4095), upper half 0
+symbol sto 0b0101_0000_0000_0000            # store a register to memory (used through the store macro)
+
+macro  load  { ld  | a? | (b? >> 6) }       # load X Y: X = the word at the address in Y
+macro  store { sto | a? | (b? >> 6) }       # store X Y: the word at the address in Y = X
+
+symbol sum    0b0110_0100_0000_0000         # A = A + B (32 bits), sets zero, carry, nega
+symbol sub    0b0110_0010_0000_0000         # A = A - B (32 bits), sets zero, carry, nega
+symbol shf    0b0110_0001_0000_0000         # shf | k: A = A shifted left by k (0 to 15)
+symbol and    0b0110_0000_1000_0000         # A = A and B
+symbol or     0b0110_0000_0100_0000         # A = A or B
+symbol xor    0b0110_0000_0010_0000         # A = A xor B
+symbol neg    0b0110_0000_0001_0000         # A = every bit of A flipped
+
+symbol psh 0b1010_0000_0000_0000            # psh X: push the 16 bits of X
+symbol pop 0b1011_0000_0000_0000            # pop X: pop 16 bits into X
+
+symbol jmp  0b1100_0000_0000_0000           # jmp; L: go to L.  jmp c; L: go to L when c holds
+symbol call 0b1110_0000_0000_0000           # call; L: run the subroutine at L
+symbol ret  0b1111_0000_0000_0000           # return from a subroutine
+
+# The registers, as load, store, psh and pop name them
+symbol rgAH 0b1000_0000_0000                # the upper 16 bits of A
+symbol rgA  0b0100_0000_0000                # the lower 16 bits of A
+symbol rgBH 0b0010_0000_0000                # the upper 16 bits of B
+symbol rgB  0b0001_0000_0000                # the lower 16 bits of B
+symbol rgSP 0b0000_1000_0000                # the program counter (leave alone)
+symbol rgSB 0b0000_0100_0000                # the stack pointer (leave alone)
+symbol non  0                               # stops the CPU (Breakpoint): the end of the program
+
+# The conditions of jmp
+symbol zero  0b1000_0000_0000               # the last sum or sub gave 0
+symbol carry 0b0100_0000_0000               # the last sum carried, or the last sub did not borrow (A >= B)
+symbol nega  0b0010_0000_0000               # the last sub went below 0 (A < B)
+symbol eq    0b0001_0000_0000               # A == B right now
+symbol neq   0b0000_1000_0000               # A != B right now
+
+# ---- Macros for the common operations (explained in the README). A macro cannot use another macro, so
+#      load and store are spelled out here. v: a variable, p: a variable holding an address, L: a label ----
+macro getA     { lia a?; ld | rgA | (rgA >> 6) }                                              # A = v
+macro getB     { lib a?; ld | rgB | (rgB >> 6) }                                              # B = v
+macro putA     { lib a?; sto | rgA | (rgB >> 6) }                                             # v = A (uses B)
+macro getAat   { lia a?; ld | rgA | (rgA >> 6); ld | rgA | (rgA >> 6) }                       # A = the word p points at
+macro putAat   { lib a?; ld | rgB | (rgB >> 6); sto | rgA | (rgB >> 6) }                      # the word p points at = A (uses B)
+macro inc      { lia a?; ld | rgA | (rgA >> 6); lib 1; sum; lib a?; sto | rgA | (rgB >> 6) }  # v = v + 1 (uses A and B)
+macro goto     { jmp; a? }                                                                    # go to L
+macro if_eq    { jmp eq; a? }                                                                 # go to L when A == B
+macro do       { call; a? }                                                                   # call the subroutine L
+macro if_carry { jmp carry; a? }                                                              # go to L after a sub when A >= B
+macro getAoff  { lia a?; ld | rgA | (rgA >> 6); lib b?; sum; ld | rgA | (rgA >> 6) }                # A = the word at (p + k) (uses B)
+macro copy     { lia a?; ld | rgA | (rgA >> 6); lib b?; sto | rgA | (rgB >> 6) }                      # w = v (uses A and B)
+macro keepcarry { psh rgAH; pop rgB; lia a?; sto | rgB | (rgA >> 6) }                                 # v = the upper half of A (uses A and B)
+macro if_neq   { jmp neq; a? }                                                                # go to L when A != B
+
+# ---- Variables (all below 0x1000, so lia/lib can address them). A number is four words, 0 the lowest ----
+# The result: how many fresh IDs have been counted
+pointer TOTAL0 0x0100 0
+pointer TOTAL1 0x0101 0
+pointer TOTAL2 0x0102 0
+pointer TOTAL3 0x0103 0
+# NEXT: the first ID not dealt with yet
+pointer NEXT0 0x0120 0
+pointer NEXT1 0x0121 0
+pointer NEXT2 0x0122 0
+pointer NEXT3 0x0123 0
+# BEST_LOW-BEST_HIGH: of the ranges that do not end below NEXT, the one that begins first
+pointer BEST_LOW0 0x0124 0
+pointer BEST_LOW1 0x0125 0
+pointer BEST_LOW2 0x0126 0
+pointer BEST_LOW3 0x0127 0
+pointer BEST_HIGH0 0x0128 0
+pointer BEST_HIGH1 0x0129 0
+pointer BEST_HIGH2 0x012A 0
+pointer BEST_HIGH3 0x012B 0
+# SUBTRACT works out DIFF = X - Y
+pointer X0 0x012C 0
+pointer X1 0x012D 0
+pointer X2 0x012E 0
+pointer X3 0x012F 0
+pointer Y0 0x0130 0
+pointer Y1 0x0131 0
+pointer Y2 0x0132 0
+pointer Y3 0x0133 0
+pointer DIFF0 0x0134 0
+pointer DIFF1 0x0135 0
+pointer DIFF2 0x0136 0
+pointer DIFF3 0x0137 0
+# The carry from one word of an addition into the next
+pointer CARRY 0x0138 0
+# R: the address of the range being looked at (LOW is at R to R + 3, HIGH at R + 4 to R + 7)
+pointer R 0x0140 0
+# For the decimal digits: how often the current power of ten fitted
+pointer DIGIT_VALUE 0x0141 0
+# Pointers: DIGIT the next digit to write, POW the next power of ten
+pointer DIGIT 0x0142 0x0110
+pointer POW 0x0143 0x1E00
+# Constants that do not fit an instruction's place for a number
+pointer RANGES 0x0144 0x2000
+pointer ALL_ONES 0x0145 0xFFFF
+
+# ---- The CPU starts at 0xFF00 ----
+origin 0xFF00
+goto MAIN
+
+origin 0x1000
+@ MAIN
+# ==== one step: start a search through the ranges ====
+#     BEST_LOW = the largest number there is (every word 0xFFFF)
+#     R = RANGES
+@ NEXT_STEP
+	getA ALL_ONES; putA BEST_LOW3                                # BEST_LOW = the largest number there is; top word
+	putA BEST_LOW2; putA BEST_LOW1; putA BEST_LOW0               # and the three words below it
+	getA RANGES; putA R                                          # R = the first range
+
+# ==== does the range at R end below NEXT? ====
+#     if memory[R + 7] == 0xFFFF: goto SEARCH_DONE      # the end mark of the ranges
+#     for k in 3, 2, 1, 0:                              # HIGH against NEXT, from the top word down
+#         if memory[R + 4 + k] != NEXTk: goto HIGH_DIFFERS
+#     goto TEST_LOW                                     # HIGH == NEXT: not counted yet
+#   HIGH_DIFFERS:
+#     if memory[R + 4 + k] > NEXTk: goto TEST_LOW       # HIGH > NEXT: not counted yet
+#     goto NEXT_RANGE                                   # HIGH < NEXT: counted already
+@ TEST_HIGH
+	getAoff R 7; getB ALL_ONES                                   # A = HIGH's top word, B = 0xFFFF
+	if_eq SEARCH_DONE                                            # the end mark: every range has been looked at
+	getB NEXT3                                                   # B = NEXT's top word (A still holds HIGH's)
+	if_neq HIGH_DIFFERS
+	getAoff R 6; getB NEXT2                                      # the third words
+	if_neq HIGH_DIFFERS
+	getAoff R 5; getB NEXT1                                      # the second words
+	if_neq HIGH_DIFFERS
+	getAoff R 4; getB NEXT0                                      # the lowest words
+	if_neq HIGH_DIFFERS
+	goto TEST_LOW                                                # all four equal: HIGH == NEXT
+@ HIGH_DIFFERS
+	sub                                                          # A = HIGH's word - NEXT's word (they differ)
+	if_carry TEST_LOW                                            # HIGH's word is larger: HIGH > NEXT
+
+# ==== the next range ====
+#     R = R + 8
+@ NEXT_RANGE
+	getA R; lib 8; sum; putA R                                   # R = R + 8
+	goto TEST_HIGH
+
+# ==== does the range at R begin before the best so far? ====
+#     for k in 3, 2, 1, 0:                              # LOW against BEST_LOW, from the top word down
+#         if memory[R + k] != BEST_LOWk: goto LOW_DIFFERS
+#     goto NEXT_RANGE                                   # LOW == BEST_LOW: keep the one found first
+#   LOW_DIFFERS:
+#     if memory[R + k] > BEST_LOWk: goto NEXT_RANGE     # LOW > BEST_LOW
+#     BEST_LOW = LOW; BEST_HIGH = HIGH                  # the eight words at R
+@ TEST_LOW
+	getAoff R 3; getB BEST_LOW3                                  # A = LOW's top word, B = BEST_LOW's
+	if_neq LOW_DIFFERS
+	getAoff R 2; getB BEST_LOW2                                  # the third words
+	if_neq LOW_DIFFERS
+	getAoff R 1; getB BEST_LOW1                                  # the second words
+	if_neq LOW_DIFFERS
+	getAat R; getB BEST_LOW0                                     # the lowest words
+	if_neq LOW_DIFFERS
+	goto NEXT_RANGE                                              # all four equal: LOW == BEST_LOW
+@ LOW_DIFFERS
+	sub                                                          # A = LOW's word - BEST_LOW's word (they differ)
+	if_carry NEXT_RANGE                                          # LOW's word is larger: LOW > BEST_LOW
+	getAat R; putA BEST_LOW0                                     # BEST_LOW = LOW; word 0 (the lowest)
+	getAoff R 1; putA BEST_LOW1                                  # word 1
+	getAoff R 2; putA BEST_LOW2                                  # word 2
+	getAoff R 3; putA BEST_LOW3                                  # word 3 (the top)
+	getAoff R 4; putA BEST_HIGH0                                 # BEST_HIGH = HIGH; word 0 (the lowest)
+	getAoff R 5; putA BEST_HIGH1                                 # word 1
+	getAoff R 6; putA BEST_HIGH2                                 # word 2
+	getAoff R 7; putA BEST_HIGH3                                 # word 3 (the top)
+	goto NEXT_RANGE
+
+# ==== the search is over: count the uncounted part of BEST_LOW-BEST_HIGH ====
+#     if BEST_LOW3 == 0xFFFF: goto ALL_COUNTED          # nothing was found: no range left
+#     X = BEST_LOW; Y = NEXT; SUBTRACT                  # only for its carry: 1 when BEST_LOW >= NEXT
+#     if CARRY == 1: Y = BEST_LOW                       # Y = START, the larger of NEXT and BEST_LOW
+#     NEXT = BEST_HIGH + 1
+#     X = NEXT; SUBTRACT                                # DIFF = NEXT - START, the uncounted IDs
+#     TOTAL = TOTAL + DIFF
+@ SEARCH_DONE
+	getA BEST_LOW3; getB ALL_ONES                                # A = BEST_LOW's top word, B = 0xFFFF
+	if_eq ALL_COUNTED                                            # still the largest number: no range left
+	copy BEST_LOW0 X0                                            # X = BEST_LOW; word 0 (the lowest)
+	copy BEST_LOW1 X1                                            # word 1
+	copy BEST_LOW2 X2                                            # word 2
+	copy BEST_LOW3 X3                                            # word 3 (the top)
+	copy NEXT0 Y0                                                # Y = NEXT; word 0 (the lowest)
+	copy NEXT1 Y1                                                # word 1
+	copy NEXT2 Y2                                                # word 2
+	copy NEXT3 Y3                                                # word 3 (the top)
+	do SUBTRACT                                                  # CARRY = 1 when BEST_LOW >= NEXT
+	getA CARRY; lib 0                                            # A = CARRY, B = 0
+	if_eq START_KNOWN                                            # BEST_LOW < NEXT: START = NEXT, which Y holds
+	copy BEST_LOW0 Y0                                            # Y = BEST_LOW; word 0 (the lowest)
+	copy BEST_LOW1 Y1                                            # word 1
+	copy BEST_LOW2 Y2                                            # word 2
+	copy BEST_LOW3 Y3                                            # word 3 (the top)
+@ START_KNOWN
+	lia 1; putA CARRY                                            # CARRY = 1: the "+ 1" enters as a carry into word 0
+	getA BEST_HIGH0; getB CARRY; sum; putA NEXT0; keepcarry CARRY # NEXT = BEST_HIGH + 1; word 0: NEXT0 = BEST_HIGH0 + carry
+	getA BEST_HIGH1; getB CARRY; sum; putA NEXT1; keepcarry CARRY # word 1
+	getA BEST_HIGH2; getB CARRY; sum; putA NEXT2; keepcarry CARRY # word 2
+	getA BEST_HIGH3; getB CARRY; sum; putA NEXT3                 # word 3 (the top)
+	copy NEXT0 X0                                                # X = NEXT; word 0 (the lowest)
+	copy NEXT1 X1                                                # word 1
+	copy NEXT2 X2                                                # word 2
+	copy NEXT3 X3                                                # word 3 (the top)
+	do SUBTRACT                                                  # DIFF = NEXT - START
+	lia 0; putA CARRY                                            # CARRY = 0
+	getA TOTAL0; getB DIFF0; sum; getB CARRY; sum; putA TOTAL0; keepcarry CARRY # TOTAL = TOTAL + DIFF; word 0: TOTAL0 = TOTAL0 + DIFF0 + carry
+	getA TOTAL1; getB DIFF1; sum; getB CARRY; sum; putA TOTAL1; keepcarry CARRY # word 1
+	getA TOTAL2; getB DIFF2; sum; getB CARRY; sum; putA TOTAL2; keepcarry CARRY # word 2
+	getA TOTAL3; getB DIFF3; sum; getB CARRY; sum; putA TOTAL3   # word 3 (the top)
+	goto NEXT_STEP
+
+# ==== write TOTAL as 15 decimal digits ====
+# A digit is how often a power of ten fits into what is left. Without division that is counting.
+# X is what is left of the total, Y the power of ten:
+#     X = TOTAL
+#     for Y in 10^14, 10^13, ..., 10, 1:                # the table ends at a number whose lowest word is 0
+#         DIGIT_VALUE = 0
+#         loop:
+#             SUBTRACT                                  # DIFF = X - Y, CARRY = 1 when X >= Y
+#             if CARRY == 0: break
+#             X = DIFF; DIGIT_VALUE = DIGIT_VALUE + 1
+#         memory[DIGIT] = DIGIT_VALUE; DIGIT = DIGIT + 1
+# (The lowest word of a power of ten up to 10^15 is never 0, so a 0 there can end the table.)
+@ ALL_COUNTED
+	copy TOTAL0 X0                                               # X = TOTAL; word 0 (the lowest)
+	copy TOTAL1 X1                                               # word 1
+	copy TOTAL2 X2                                               # word 2
+	copy TOTAL3 X3                                               # word 3 (the top)
+@ NEXT_POWER
+	getAat POW                                                   # A = the lowest word of the next power of ten
+	lib 0                                                        # B = 0
+	if_eq END                                                    # a lowest word of 0 ends the table
+	putA Y0                                                      # Y = the power of ten; word 0 (the lowest)
+	getAoff POW 1; putA Y1                                       # word 1
+	getAoff POW 2; putA Y2                                       # word 2
+	getAoff POW 3; putA Y3                                       # word 3 (the top)
+	getA POW; lib 4; sum; putA POW                               # POW = POW + 4
+	lia 0; putA DIGIT_VALUE                                      # DIGIT_VALUE = 0
+@ FITS_AGAIN
+	do SUBTRACT                                                  # DIFF = X - Y, CARRY = 1 when X >= Y
+	getA CARRY; lib 0                                            # A = CARRY, B = 0
+	if_eq WRITE_DIGIT                                            # X < Y: the power does not fit again
+	copy DIFF0 X0                                                # X = DIFF; word 0 (the lowest)
+	copy DIFF1 X1                                                # word 1
+	copy DIFF2 X2                                                # word 2
+	copy DIFF3 X3                                                # word 3 (the top)
+	inc DIGIT_VALUE                                              # DIGIT_VALUE = DIGIT_VALUE + 1
+	goto FITS_AGAIN
+@ WRITE_DIGIT
+	getA DIGIT_VALUE; putAat DIGIT                               # memory[DIGIT] = DIGIT_VALUE
+	inc DIGIT                                                    # DIGIT = DIGIT + 1
+	goto NEXT_POWER
+
+# The word 0 stops the CPU on its Breakpoint.
+@ END
+	non
+
+# ---- Subroutine ----
+origin 0x1800
+# SUBTRACT: DIFF = X - Y, and CARRY = 1 when X >= Y (0 when X < Y; DIFF is then of no use).
+# Done as X + (Y with every bit flipped) + 1, word by word from the lowest:
+#     CARRY = 1                                         # the "+ 1"
+#     for k in 0, 1, 2, 3:
+#         A = (0xFFFF - Yk) + Xk + CARRY                # at most 0x1FFFF
+#         DIFFk = the lower half of A; CARRY = the upper half of A
+# X and Y are left as they were.
+@ SUBTRACT
+	lia 1; putA CARRY                                            # CARRY = 1
+	getA ALL_ONES; getB Y0; sub; getB X0; sum; getB CARRY; sum; putA DIFF0; keepcarry CARRY # word 0: DIFF0 = (0xFFFF - Y0) + X0 + carry
+	getA ALL_ONES; getB Y1; sub; getB X1; sum; getB CARRY; sum; putA DIFF1; keepcarry CARRY # word 1
+	getA ALL_ONES; getB Y2; sub; getB X2; sum; getB CARRY; sum; putA DIFF2; keepcarry CARRY # word 2
+	getA ALL_ONES; getB Y3; sub; getB X3; sum; getB CARRY; sum; putA DIFF3; keepcarry CARRY # word 3: its carry is 1 when X >= Y
+	ret
+
+# ---- Powers of ten for the decimal digits: 10^14 down to 1, four words each, lowest first; then 0 ----
+origin 0x1E00
+0x4000; 0x107A; 0x5AF3; 0x0000    # 100000000000000
+0xA000; 0x4E72; 0x0918; 0x0000    # 10000000000000
+0x1000; 0xD4A5; 0x00E8; 0x0000    # 1000000000000
+0xE800; 0x4876; 0x0017; 0x0000    # 100000000000
+0xE400; 0x540B; 0x0002; 0x0000    # 10000000000
+0xCA00; 0x3B9A; 0x0000; 0x0000    # 1000000000
+0xE100; 0x05F5; 0x0000; 0x0000    # 100000000
+0x9680; 0x0098; 0x0000; 0x0000    # 10000000
+0x4240; 0x000F; 0x0000; 0x0000    # 1000000
+0x86A0; 0x0001; 0x0000; 0x0000    # 100000
+0x2710; 0x0000; 0x0000; 0x0000    # 10000
+0x03E8; 0x0000; 0x0000; 0x0000    # 1000
+0x0064; 0x0000; 0x0000; 0x0000    # 100
+0x000A; 0x0000; 0x0000; 0x0000    # 10
+0x0001; 0x0000; 0x0000; 0x0000    # 1
+0
+
+# ---- The ranges: 4, then the end mark ----
+# Eight words per range: LOW lowest word first, then HIGH lowest word first.
+origin 0x2000
+0x0003; 0x0000; 0x0000; 0x0000; 0x0005; 0x0000; 0x0000; 0x0000    # 3-5
+0x000A; 0x0000; 0x0000; 0x0000; 0x000E; 0x0000; 0x0000; 0x0000    # 10-14
+0x0010; 0x0000; 0x0000; 0x0000; 0x0014; 0x0000; 0x0000; 0x0000    # 16-20
+0x000C; 0x0000; 0x0000; 0x0000; 0x0012; 0x0000; 0x0000; 0x0000    # 12-18
+0; 0; 0; 0; 0xFFFF; 0xFFFF; 0xFFFF; 0xFFFF    # the end mark
