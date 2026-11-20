@@ -1,0 +1,451 @@
+# Advent of Code 2025, day 6 part 2 (Trash Compactor), with the puzzle's example as input (answer 3263827)
+#
+# THE PUZZLE
+# The input is a worksheet of problems side by side: digits in the upper rows and a + or * in the last
+# row under each problem's first column. In part 2 a number is written downwards: each column of
+# characters is one number, its top digit the most significant. A problem's numbers are added or
+# multiplied, as its sign says, and a column of only spaces separates two problems. The answer is the
+# sum of all the problems' results.
+#
+# THE IDEA
+# The worksheet is in memory character by character, row after row, so the character below a character
+# is STRIDE = (characters per row) + 1 words further on. The program reads it one column at a time from
+# the left (the order of the numbers does not matter for a sum or a product):
+#     - a sign under the column: a new problem starts. VALUE = 0 for +, 1 for *.
+#     - the column's digits, read downwards, make the number N: N = N * 10 + digit.
+#     - a column with digits: VALUE = VALUE + N, or VALUE = VALUE * N.
+#     - a column without digits: the problem is finished. TOTAL = TOTAL + VALUE.
+# The example's first problem:     1 2 3      column 1: sign *, VALUE = 1; N = 1;   VALUE = 1
+#                                    4 5      column 2: N = 24;                     VALUE = 24
+#                                      6      column 3: N = 356;                    VALUE = 8544
+#                                  *          column 4: no digits: TOTAL = TOTAL + 8544
+#
+# MULTIPLYING WITHOUT A MULTIPLY INSTRUCTION
+# N * 10 is N * 8 + N * 2, two shifts and a sum. VALUE * N is done as on paper, but in binary: N is a sum
+# of powers of two, and VALUE * N is the sum of VALUE * (those powers). VALUE * 2 is VALUE + VALUE. For
+# 123 * 5 (5 = 4 + 1):
+#     BIT = 1    5 has the 1    RESULT = 0 + 123 = 123       VALUE = 123 + 123 = 246
+#     BIT = 2    5 has no 2                                  VALUE = 246 + 246 = 492
+#     BIT = 4    5 has the 4    RESULT = 123 + 492 = 615     VALUE = 984
+#     BIT = 8    8 > 5: finished, 123 * 5 = 615
+# "N has the BIT" is (N and BIT) != 0. A number of four digits takes at most 14 rounds.
+#
+# THE WHOLE PROGRAM IN PSEUDO CODE
+#     STRIDE = (address of the first row's end mark) - GRID + 1
+#     SIGN = GRID; while memory[SIGN] < 0xFFF1: SIGN = SIGN + STRIDE     # the row of signs
+#     TOTAL = 0; VALUE = 0; C = GRID
+#     while memory[C] != END_MARK:                          # one column of characters
+#         if memory[SIGN] != BLANK:                         # a new problem
+#             OP = memory[SIGN]
+#             VALUE = 1 if OP == TIMES else 0
+#         N = 0; SEEN = 0
+#         for P = C; P != SIGN; P = P + STRIDE:             # down the column
+#             if memory[P] != BLANK: N = N * 10 + memory[P]; SEEN = 1
+#         if SEEN == 0: TOTAL = TOTAL + VALUE; VALUE = 0    # the column between two problems
+#         else if OP == TIMES: VALUE = VALUE * N
+#         else: VALUE = VALUE + N
+#         C = C + 1; SIGN = SIGN + 1
+#     TOTAL = TOTAL + VALUE                                 # the last problem has no column after it
+#     write TOTAL as 15 decimal digits
+#     stop
+#
+# NUMBERS OF FOUR WORDS
+# A product of four numbers of four digits needs up to 54 bits, more than the 32 bits of a register. So
+# TOTAL, VALUE and RESULT are four 16-bit words each, lowest word first: VALUE is the words VALUE0
+# (lowest) to VALUE3 (top). N is one word.
+#   Adding: word by word from the lowest. Two words are added in a 32-bit register; the lower half of
+#     the sum is the result's word, the upper half is the carry into the next word.
+#   Subtracting (only for the decimal digits): the CPU cannot borrow from one word to the next, so X - Y
+#     is X + (every bit of Y flipped) + 1. The carry out of the top word is 1 exactly when X >= Y.
+#
+# THE RESULT, when the CPU stops on the Breakpoint at END
+#   0x0100-0x0103  TOTAL as four 16-bit words, lowest first
+#   0x0110-0x011E  TOTAL as 15 decimal digits, one per word, most significant first
+#
+# THE INPUT (rule 1 of RULES.md), at 0x2000
+# The worksheet row by row, one word per character: a digit is its value (0 to 9), a space is 0xFFF0,
+# + is 0xFFF1, * is 0xFFF2. Every row, the row of signs too, is followed by the end mark 0xFFFF.
+# Built-in limits: every row has the same count of characters; the first column holds a sign; there is
+# at least one row of digits; every number is below 32,768 (four digits always are); every result
+# and the answer are below 2^64, and the answer below 10^15.
+#
+# THE IDIOMS (v is a variable's address, below 0x1000)
+#     getA v                   A = the word at v   (lia v; load rgA rgA: lia puts the address in A, load replaces it)
+#     getB v                   B = the word at v
+#     putA v                   the word at v = A   (this uses up B)
+#     getAat p / putAat p      the same for the word the pointer p points at
+#     copy v w                 w = v
+#     getAoff p k              A = the word at the address (p + k); p is a variable holding an address
+#     keepcarry v              v = the upper half of A: the carry of the sum just made
+#     if_eq L / if_neq L       compares A with B as they are now
+#     sub; if_carry L          after A - B: taken when A >= B
+# What each instruction does exactly is in findings/cpu-instructions.md.
+#
+# MEMORY MAP
+#   0x0100-0x0155  variables            0x1E00-  POWERS: 10^14 down to 1, four words each, then 0
+#   0x1000-        the program          0x2000-  the worksheet (3 rows of 15 characters and the signs end at 0x203F)
+#   0x1800-        the subroutines      0xFF00   where the CPU starts
+
+# ---- The CPU's instructions as symbols (day 1's table without its _32 names, which the CPU ignores) ----
+symbol nop 0b0000_0000_0000_0000            # the word 0: stops the CPU (the same word as non)
+symbol ld  0b0010_0000_0000_0000            # load a register from memory (used through the load macro)
+symbol lia 0b0011_0000_0000_0000            # lia n: A = n (0 to 4095), upper half 0
+symbol lib 0b0100_0000_0000_0000            # lib n: B = n (0 to 4095), upper half 0
+symbol sto 0b0101_0000_0000_0000            # store a register to memory (used through the store macro)
+
+macro  load  { ld  | a? | (b? >> 6) }       # load X Y: X = the word at the address in Y
+macro  store { sto | a? | (b? >> 6) }       # store X Y: the word at the address in Y = X
+
+symbol sum    0b0110_0100_0000_0000         # A = A + B (32 bits), sets zero, carry, nega
+symbol sub    0b0110_0010_0000_0000         # A = A - B (32 bits), sets zero, carry, nega
+symbol shf    0b0110_0001_0000_0000         # shf | k: A = A shifted left by k (0 to 15)
+symbol and    0b0110_0000_1000_0000         # A = A and B
+symbol or     0b0110_0000_0100_0000         # A = A or B
+symbol xor    0b0110_0000_0010_0000         # A = A xor B
+symbol neg    0b0110_0000_0001_0000         # A = every bit of A flipped
+
+symbol psh 0b1010_0000_0000_0000            # psh X: push the 16 bits of X
+symbol pop 0b1011_0000_0000_0000            # pop X: pop 16 bits into X
+
+symbol jmp  0b1100_0000_0000_0000           # jmp; L: go to L.  jmp c; L: go to L when c holds
+symbol call 0b1110_0000_0000_0000           # call; L: run the subroutine at L
+symbol ret  0b1111_0000_0000_0000           # return from a subroutine
+
+# The registers, as load, store, psh and pop name them
+symbol rgAH 0b1000_0000_0000                # the upper 16 bits of A
+symbol rgA  0b0100_0000_0000                # the lower 16 bits of A
+symbol rgBH 0b0010_0000_0000                # the upper 16 bits of B
+symbol rgB  0b0001_0000_0000                # the lower 16 bits of B
+symbol rgSP 0b0000_1000_0000                # the program counter (leave alone)
+symbol rgSB 0b0000_0100_0000                # the stack pointer (leave alone)
+symbol non  0                               # stops the CPU (Breakpoint): the end of the program
+
+# The conditions of jmp
+symbol zero  0b1000_0000_0000               # the last sum or sub gave 0
+symbol carry 0b0100_0000_0000               # the last sum carried, or the last sub did not borrow (A >= B)
+symbol nega  0b0010_0000_0000               # the last sub went below 0 (A < B)
+symbol eq    0b0001_0000_0000               # A == B right now
+symbol neq   0b0000_1000_0000               # A != B right now
+
+# ---- Macros for the common operations (explained in the README). A macro cannot use another macro, so
+#      load and store are spelled out here. v: a variable, p: a variable holding an address, L: a label ----
+macro getA     { lia a?; ld | rgA | (rgA >> 6) }                                              # A = v
+macro getB     { lib a?; ld | rgB | (rgB >> 6) }                                              # B = v
+macro putA     { lib a?; sto | rgA | (rgB >> 6) }                                             # v = A (uses B)
+macro getAat   { lia a?; ld | rgA | (rgA >> 6); ld | rgA | (rgA >> 6) }                       # A = the word p points at
+macro putAat   { lib a?; ld | rgB | (rgB >> 6); sto | rgA | (rgB >> 6) }                      # the word p points at = A (uses B)
+macro inc      { lia a?; ld | rgA | (rgA >> 6); lib 1; sum; lib a?; sto | rgA | (rgB >> 6) }  # v = v + 1 (uses A and B)
+macro goto     { jmp; a? }                                                                    # go to L
+macro if_eq    { jmp eq; a? }                                                                 # go to L when A == B
+macro do       { call; a? }                                                                   # call the subroutine L
+macro if_carry { jmp carry; a? }                                                              # go to L after a sub when A >= B
+macro getAoff  { lia a?; ld | rgA | (rgA >> 6); lib b?; sum; ld | rgA | (rgA >> 6) }                # A = the word at (p + k) (uses B)
+macro copy     { lia a?; ld | rgA | (rgA >> 6); lib b?; sto | rgA | (rgB >> 6) }                      # w = v (uses A and B)
+macro keepcarry { psh rgAH; pop rgB; lia a?; sto | rgB | (rgA >> 6) }                                 # v = the upper half of A (uses A and B)
+macro if_neq   { jmp neq; a? }                                                                # go to L when A != B
+
+
+# ---- Variables (all below 0x1000, so lia/lib can address them). A number is four words, 0 the lowest ----
+# The result: the sum of the problems so far
+pointer TOTAL0 0x0100 0
+pointer TOTAL1 0x0101 0
+pointer TOTAL2 0x0102 0
+pointer TOTAL3 0x0103 0
+# VALUE: the problem's sum or product so far. In MULTIPLY it is doubled round by round
+pointer VALUE0 0x0120 0
+pointer VALUE1 0x0121 0
+pointer VALUE2 0x0122 0
+pointer VALUE3 0x0123 0
+# RESULT: what MULTIPLY has added up
+pointer RESULT0 0x0124 0
+pointer RESULT1 0x0125 0
+pointer RESULT2 0x0126 0
+pointer RESULT3 0x0127 0
+# SUBTRACT works out DIFF = X - Y (for the decimal digits)
+pointer X0 0x0128 0
+pointer X1 0x0129 0
+pointer X2 0x012A 0
+pointer X3 0x012B 0
+pointer Y0 0x012C 0
+pointer Y1 0x012D 0
+pointer Y2 0x012E 0
+pointer Y3 0x012F 0
+pointer DIFF0 0x0130 0
+pointer DIFF1 0x0131 0
+pointer DIFF2 0x0132 0
+pointer DIFF3 0x0133 0
+# The carry from one word of an addition into the next
+pointer CARRY 0x0138 0
+# N: the number in the column. SEEN: 1 when the column held a digit. BIT: the power of two MULTIPLY is looking at
+pointer N 0x0139 0
+pointer SEEN 0x013A 0
+pointer BIT 0x013B 0
+# OP: the sign of the problem being read. TWICE: N * 2 while N * 10 is worked out. D: the digit just read
+pointer OP 0x013C 0
+pointer TWICE 0x013D 0
+pointer D 0x013E 0
+# C: the address of the column's character in the first row. SIGN: the address of the character under the column
+# in the row of signs. P walks from C down to SIGN
+pointer C 0x0140 0x2000
+pointer SIGN 0x0141 0x2000
+pointer P 0x0142 0
+# STRIDE: the distance from a character to the one below it
+pointer STRIDE 0x0143 0
+# For the decimal digits: how often the current power of ten fitted
+pointer DIGIT_VALUE 0x0144 0
+# Pointers: DIGIT the next digit to write, POW the next power of ten
+pointer DIGIT 0x0145 0x0110
+pointer POW 0x0146 0x1E00
+# Constants that do not fit an instruction's place for a number
+pointer GRID 0x0150 0x2000
+pointer END_MARK 0x0151 0xFFFF
+pointer BLANK 0x0152 0xFFF0
+pointer FIRST_SIGN 0x0153 0xFFF1
+pointer TIMES 0x0154 0xFFF2
+pointer ALL_ONES 0x0155 0xFFFF
+
+# ---- The CPU starts at 0xFF00 ----
+origin 0xFF00
+goto MAIN
+
+origin 0x1000
+@ MAIN
+# ==== find the length of a row ====
+#     P = GRID
+#     while memory[P] != END_MARK: P = P + 1        # P is free for this; it walks along the first row
+#     STRIDE = P - GRID + 1
+@ FIND_WIDTH
+	getA GRID; putA P                                            # P = the address of the worksheet
+@ FIND_WIDTH_NEXT
+	getAat P; getB END_MARK                                      # A = memory[P], B = the end mark
+	if_eq WIDTH_FOUND                                            # the first row's end mark
+	inc P                                                        # P = P + 1
+	goto FIND_WIDTH_NEXT
+@ WIDTH_FOUND
+	getA P; getB GRID; sub                                       # A = P - GRID, the count of characters in a row
+	lib 1; sum; putA STRIDE                                      # STRIDE = that + 1
+
+# ==== find the row of signs ====
+#     while memory[SIGN] < 0xFFF1: SIGN = SIGN + STRIDE     # SIGN starts at GRID; the first column holds a sign
+@ FIND_SIGNS
+	getAat SIGN; getB FIRST_SIGN; sub                            # A = memory[SIGN] - 0xFFF1
+	if_carry NEXT_COLUMN                                         # not below 0xFFF1: a sign, so this is the row of signs
+	getA SIGN; getB STRIDE; sum; putA SIGN                       # SIGN = SIGN + STRIDE, the row below
+	goto FIND_SIGNS
+
+# ==== one column: does a problem start here? ====
+#     if memory[C] == END_MARK: goto ALL_COLUMNS_DONE
+#     if memory[SIGN] != BLANK:
+#         OP = memory[SIGN]
+#         VALUE = 1 if OP == TIMES else 0
+@ NEXT_COLUMN
+	getAat C; getB END_MARK                                      # A = memory[C], B = the end mark
+	if_eq ALL_COLUMNS_DONE                                       # the end of the first row: no more columns
+	getAat SIGN; getB BLANK                                      # A = the character under the column, B = a space
+	if_eq READ_NUMBER                                            # no sign: the same problem goes on
+	putA OP                                                      # OP = the sign
+	lia 0; putA VALUE0; putA VALUE1; putA VALUE2; putA VALUE3    # VALUE = 0, all four words
+	getA OP; getB TIMES                                          # A = OP, B = the sign *
+	if_neq READ_NUMBER                                           # a + problem starts at 0
+	lia 1; putA VALUE0                                           # a * problem starts at 1
+
+# ==== read the number in the column ====
+#     N = 0; SEEN = 0
+#     for P = C; P != SIGN; P = P + STRIDE:
+#         if memory[P] != BLANK:
+#             N = N * 10 + memory[P]                # N * 10 = N * 2 + N * 8
+#             SEEN = 1
+@ READ_NUMBER
+	lia 0; putA N; putA SEEN                                     # N = 0; SEEN = 0
+	copy C P                                                     # P = C, the top of the column
+@ READ_DIGIT
+	getA P; getB SIGN                                            # A = P, B = SIGN
+	if_eq NUMBER_READ                                            # P has reached the row of signs
+	getAat P; getB BLANK                                         # A = memory[P], B = a space
+	if_eq DIGIT_DONE                                             # no digit in this row
+	putA D                                                       # D = the digit
+	getA N; shf | 1; putA TWICE                                  # TWICE = N * 2
+	getA N; shf | 3                                              # A = N * 8
+	getB TWICE; sum                                              # A = N * 8 + N * 2 = N * 10
+	getB D; sum; putA N                                          # N = N * 10 + D
+	lia 1; putA SEEN                                             # SEEN = 1
+@ DIGIT_DONE
+	getA P; getB STRIDE; sum; putA P                             # P = P + STRIDE, the character below
+	goto READ_DIGIT
+
+# ==== use the number ====
+#     if SEEN == 0: ADD_VALUE                       # TOTAL = TOTAL + VALUE; VALUE = 0
+#     else if OP == TIMES: MULTIPLY                 # VALUE = VALUE * N
+#     else: VALUE = VALUE + N
+#     C = C + 1; SIGN = SIGN + 1
+@ NUMBER_READ
+	getA SEEN; lib 0                                             # A = SEEN, B = 0
+	if_eq PROBLEM_DONE                                           # a column without digits: the problem is finished
+	getA OP; getB TIMES                                          # A = OP, B = the sign *
+	if_eq TIMES_NUMBER
+	lia 0; putA CARRY                                            # CARRY = 0
+	getA VALUE0; getB N; sum; putA VALUE0; keepcarry CARRY       # VALUE = VALUE + N; word 0: VALUE0 = VALUE0 + N
+	getA VALUE1; getB CARRY; sum; putA VALUE1; keepcarry CARRY   # word 1: VALUE1 = VALUE1 + carry
+	getA VALUE2; getB CARRY; sum; putA VALUE2; keepcarry CARRY   # word 2
+	getA VALUE3; getB CARRY; sum; putA VALUE3                    # word 3 (the top)
+	goto COLUMN_DONE
+@ TIMES_NUMBER
+	do MULTIPLY                                                  # VALUE = VALUE * N
+	goto COLUMN_DONE
+@ PROBLEM_DONE
+	do ADD_VALUE                                                 # TOTAL = TOTAL + VALUE; VALUE = 0
+@ COLUMN_DONE
+	inc C                                                        # C = C + 1
+	inc SIGN                                                     # SIGN = SIGN + 1
+	goto NEXT_COLUMN
+
+# ==== the last problem has no empty column after it ====
+#     ADD_VALUE                                     # adds 0 when the worksheet ends in a column of spaces
+@ ALL_COLUMNS_DONE
+	do ADD_VALUE                                                 # TOTAL = TOTAL + VALUE; VALUE = 0
+
+# ==== write TOTAL as 15 decimal digits ====
+# A digit is how often a power of ten fits into what is left. Without division that is counting.
+# X is what is left of the total, Y the power of ten:
+#     X = TOTAL
+#     for Y in 10^14, 10^13, ..., 10, 1:                # the table ends at a number whose lowest word is 0
+#         DIGIT_VALUE = 0
+#         loop:
+#             SUBTRACT                                  # DIFF = X - Y, CARRY = 1 when X >= Y
+#             if CARRY == 0: break
+#             X = DIFF; DIGIT_VALUE = DIGIT_VALUE + 1
+#         memory[DIGIT] = DIGIT_VALUE; DIGIT = DIGIT + 1
+# (The lowest word of a power of ten up to 10^15 is never 0, so a 0 there can end the table.)
+@ WRITE_TOTAL
+	copy TOTAL0 X0                                               # X = TOTAL; word 0 (the lowest)
+	copy TOTAL1 X1                                               # word 1
+	copy TOTAL2 X2                                               # word 2
+	copy TOTAL3 X3                                               # word 3 (the top)
+@ NEXT_POWER
+	getAat POW                                                   # A = the lowest word of the next power of ten
+	lib 0                                                        # B = 0
+	if_eq END                                                    # a lowest word of 0 ends the table
+	putA Y0                                                      # Y = the power of ten; word 0 (the lowest)
+	getAoff POW 1; putA Y1                                       # word 1
+	getAoff POW 2; putA Y2                                       # word 2
+	getAoff POW 3; putA Y3                                       # word 3 (the top)
+	getA POW; lib 4; sum; putA POW                               # POW = POW + 4
+	lia 0; putA DIGIT_VALUE                                      # DIGIT_VALUE = 0
+@ FITS_AGAIN
+	do SUBTRACT                                                  # DIFF = X - Y, CARRY = 1 when X >= Y
+	getA CARRY; lib 0                                            # A = CARRY, B = 0
+	if_eq WRITE_DIGIT                                            # X < Y: the power does not fit again
+	copy DIFF0 X0                                                # X = DIFF; word 0 (the lowest)
+	copy DIFF1 X1                                                # word 1
+	copy DIFF2 X2                                                # word 2
+	copy DIFF3 X3                                                # word 3 (the top)
+	inc DIGIT_VALUE                                              # DIGIT_VALUE = DIGIT_VALUE + 1
+	goto FITS_AGAIN
+@ WRITE_DIGIT
+	getA DIGIT_VALUE; putAat DIGIT                               # memory[DIGIT] = DIGIT_VALUE
+	inc DIGIT                                                    # DIGIT = DIGIT + 1
+	goto NEXT_POWER
+
+# The word 0 stops the CPU on its Breakpoint.
+@ END
+	non
+
+# ---- Subroutines ----
+origin 0x1800
+# ADD_VALUE: a problem is finished.
+#     TOTAL = TOTAL + VALUE; VALUE = 0
+@ ADD_VALUE
+	lia 0; putA CARRY                                            # CARRY = 0
+	getA TOTAL0; getB VALUE0; sum; getB CARRY; sum; putA TOTAL0; keepcarry CARRY # TOTAL = TOTAL + VALUE; word 0: TOTAL0 = TOTAL0 + VALUE0 + carry
+	getA TOTAL1; getB VALUE1; sum; getB CARRY; sum; putA TOTAL1; keepcarry CARRY # word 1
+	getA TOTAL2; getB VALUE2; sum; getB CARRY; sum; putA TOTAL2; keepcarry CARRY # word 2
+	getA TOTAL3; getB VALUE3; sum; getB CARRY; sum; putA TOTAL3  # word 3 (the top)
+	lia 0; putA VALUE0; putA VALUE1; putA VALUE2; putA VALUE3    # VALUE = 0, all four words
+	ret
+
+# MULTIPLY: VALUE = VALUE * N, for N below 32,768.
+#     RESULT = 0; BIT = 1
+#     while BIT <= N:
+#         if (N and BIT) != 0: RESULT = RESULT + VALUE
+#         VALUE = VALUE + VALUE               # VALUE is now (what it was at the start) * 2 * BIT
+#         BIT = BIT + BIT
+#     VALUE = RESULT
+@ MULTIPLY
+	lia 0; putA RESULT0; putA RESULT1; putA RESULT2; putA RESULT3 # RESULT = 0, all four words
+	lia 1; putA BIT                                              # BIT = 1
+@ MULTIPLY_ROUND
+	getA N; getB BIT; sub                                        # A = N - BIT
+	if_carry MULTIPLY_BIT                                        # N >= BIT: there may be more to add
+	copy RESULT0 VALUE0                                        # VALUE = RESULT; word 0 (the lowest)
+	copy RESULT1 VALUE1                                        # word 1
+	copy RESULT2 VALUE2                                        # word 2
+	copy RESULT3 VALUE3                                        # word 3 (the top)
+	ret
+@ MULTIPLY_BIT
+	getA N; getB BIT; and                                        # A = N and BIT
+	lib 0                                                        # B = 0
+	if_eq MULTIPLY_DOUBLE                                        # N does not have this power of two
+	lia 0; putA CARRY                                            # CARRY = 0
+	getA RESULT0; getB VALUE0; sum; getB CARRY; sum; putA RESULT0; keepcarry CARRY # RESULT = RESULT + VALUE; word 0: RESULT0 = RESULT0 + VALUE0 + carry
+	getA RESULT1; getB VALUE1; sum; getB CARRY; sum; putA RESULT1; keepcarry CARRY # word 1
+	getA RESULT2; getB VALUE2; sum; getB CARRY; sum; putA RESULT2; keepcarry CARRY # word 2
+	getA RESULT3; getB VALUE3; sum; getB CARRY; sum; putA RESULT3 # word 3 (the top)
+@ MULTIPLY_DOUBLE
+	lia 0; putA CARRY                                            # CARRY = 0
+	getA VALUE0; getB VALUE0; sum; getB CARRY; sum; putA VALUE0; keepcarry CARRY # VALUE = VALUE + VALUE; word 0: VALUE0 = VALUE0 + VALUE0 + carry
+	getA VALUE1; getB VALUE1; sum; getB CARRY; sum; putA VALUE1; keepcarry CARRY # word 1
+	getA VALUE2; getB VALUE2; sum; getB CARRY; sum; putA VALUE2; keepcarry CARRY # word 2
+	getA VALUE3; getB VALUE3; sum; getB CARRY; sum; putA VALUE3 # word 3 (the top)
+	getA BIT; getB BIT; sum; putA BIT                            # BIT = BIT + BIT
+	goto MULTIPLY_ROUND
+
+# SUBTRACT: DIFF = X - Y, and CARRY = 1 when X >= Y (0 when X < Y; DIFF is then of no use).
+# Done as X + (Y with every bit flipped) + 1, word by word from the lowest:
+#     CARRY = 1                                         # the "+ 1"
+#     for k in 0, 1, 2, 3:
+#         A = (0xFFFF - Yk) + Xk + CARRY                # at most 0x1FFFF
+#         DIFFk = the lower half of A; CARRY = the upper half of A
+# X and Y are left as they were.
+@ SUBTRACT
+	lia 1; putA CARRY                                            # CARRY = 1
+	getA ALL_ONES; getB Y0; sub; getB X0; sum; getB CARRY; sum; putA DIFF0; keepcarry CARRY # word 0: DIFF0 = (0xFFFF - Y0) + X0 + carry
+	getA ALL_ONES; getB Y1; sub; getB X1; sum; getB CARRY; sum; putA DIFF1; keepcarry CARRY # word 1
+	getA ALL_ONES; getB Y2; sub; getB X2; sum; getB CARRY; sum; putA DIFF2; keepcarry CARRY # word 2
+	getA ALL_ONES; getB Y3; sub; getB X3; sum; getB CARRY; sum; putA DIFF3; keepcarry CARRY # word 3: its carry is 1 when X >= Y
+	ret
+
+# ---- Powers of ten for the decimal digits: 10^14 down to 1, four words each, lowest first; then 0 ----
+origin 0x1E00
+0x4000; 0x107A; 0x5AF3; 0x0000    # 100000000000000
+0xA000; 0x4E72; 0x0918; 0x0000    # 10000000000000
+0x1000; 0xD4A5; 0x00E8; 0x0000    # 1000000000000
+0xE800; 0x4876; 0x0017; 0x0000    # 100000000000
+0xE400; 0x540B; 0x0002; 0x0000    # 10000000000
+0xCA00; 0x3B9A; 0x0000; 0x0000    # 1000000000
+0xE100; 0x05F5; 0x0000; 0x0000    # 100000000
+0x9680; 0x0098; 0x0000; 0x0000    # 10000000
+0x4240; 0x000F; 0x0000; 0x0000    # 1000000
+0x86A0; 0x0001; 0x0000; 0x0000    # 100000
+0x2710; 0x0000; 0x0000; 0x0000    # 10000
+0x03E8; 0x0000; 0x0000; 0x0000    # 1000
+0x0064; 0x0000; 0x0000; 0x0000    # 100
+0x000A; 0x0000; 0x0000; 0x0000    # 10
+0x0001; 0x0000; 0x0000; 0x0000    # 1
+0
+
+
+# ---- The worksheet: 3 rows of 15 characters, then the row of signs ----
+# One word per character: a digit is its value, 0xFFF0 a space, 0xFFF1 +, 0xFFF2 *; 0xFFFF ends every row.
+origin 0x2000
+# row 1
+1; 2; 3; 0xFFF0; 3; 2; 8; 0xFFF0; 0xFFF0; 5; 1; 0xFFF0; 6; 4; 0xFFF0    # "123 328  51 64 "
+0xFFFF
+# row 2
+0xFFF0; 4; 5; 0xFFF0; 6; 4; 0xFFF0; 0xFFF0; 3; 8; 7; 0xFFF0; 2; 3; 0xFFF0    # " 45 64  387 23 "
+0xFFFF
+# row 3
+0xFFF0; 0xFFF0; 6; 0xFFF0; 9; 8; 0xFFF0; 0xFFF0; 2; 1; 5; 0xFFF0; 3; 1; 4    # "  6 98  215 314"
+0xFFFF
+# the row of signs
+0xFFF2; 0xFFF0; 0xFFF0; 0xFFF0; 0xFFF1; 0xFFF0; 0xFFF0; 0xFFF0; 0xFFF2; 0xFFF0; 0xFFF0; 0xFFF0; 0xFFF1; 0xFFF0; 0xFFF0    # "*   +   *   +  "
+0xFFFF
