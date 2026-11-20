@@ -14,6 +14,7 @@ The CPU's board files for the Steam game Virtual Circuit Board (Update 1.0.1), a
 | `days/day4/cpu-32bit-autorun-aoc4p2.vcb` | The same for `days/day4/part2.vcbasm`; Persistent Memory `0x0100`–`0x0114`. |
 | `days/day5/cpu-32bit-autorun-aoc5p1.vcb` | The same for `days/day5/part1.vcbasm`; Persistent Memory `0x0100`–`0x0114`. |
 | `days/day5/cpu-32bit-autorun-aoc5p2.vcb` | The same for `days/day5/part2.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
+| `days/day6/cpu-32bit-autorun-aoc6p1.vcb` | The same for `days/day6/part1.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
 
 The boards differ only in those 24 latch pixels, in the assembly text they carry, and in the Persistent Memory range.
 
@@ -47,6 +48,8 @@ The rules the puzzles are solved under are in [`RULES.md`](RULES.md).
 | `days/day5/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 3) |
 | `days/day5/part2.vcbasm` | Advent of Code day 5, part 2. The header says where the answer is left |
 | `days/day5/part2-example.vcbasm` | The same program with the puzzle's example as input (answer 14) |
+| `days/day6/part1.vcbasm` | Advent of Code day 6, part 1. The header says where the answer is left |
+| `days/day6/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 4277556) |
 
 ## How a solution is written
 
@@ -85,6 +88,8 @@ Measured in the `vcb` engine on `cpu-32bit-autorun-aoc1p1.vcb`, to the Breakpoin
 | Day 5 part 1 | 798 | 800,901,776 | 2.4 s | 3,129,000 | 5,727 words |
 | Day 5 part 2, example | 14 | 1,343,056 | 0.01 s | 5,200 | 650 words |
 | Day 5 part 2 | 366181852921027 | 258,090,384 | 0.6 s | 1,008,000 | 2,114 words |
+| Day 6 part 1, example | 4277556 | 2,878,992 | 0.02 s | 11,000 | 683 words |
+| Day 6 part 1 | 3261038365331 | 455,100,048 | 1.1 s | 1,778,000 | 5,668 words |
 
 "Instructions run" is the tick count divided by 256, the cost of most instructions:
 
@@ -132,6 +137,13 @@ Notes on the day 5 solutions:
 - **Part 2 counts upwards and sorts nothing.** It keeps the first ID not dealt with yet. A step reads all ranges, takes the one that begins first among those not ending below that ID, adds its uncounted part to the total and moves on to the ID after its end. Overlaps are never counted twice and the ranges stay as they are. This input needs 152 steps for its 187 ranges, 28,424 looks at a range, about 30 instructions each.
 - **Part 2 subtracts by adding.** The CPU cannot borrow from one word to the next, so X - Y is X + (Y with every bit flipped) + 1, word by word. The carry out of the top word tells whether X >= Y, so the same subroutine compares, and it also makes the 15 decimal digits of the answer (how often each power of ten can be taken away).
 - **Part 2's size:** about 550 words of code, variables and the powers of ten; the rest of the 2,114 words is the ranges.
+
+Notes on the day 6 solution:
+
+- **The worksheet is in memory as on paper**, row after row with one word per number, so a problem is a column: the program walks down it in steps of one row's length, as day 4 does in its grid.
+- **Multiplying is doubling and adding.** The CPU has no multiply. For each power of two up to the multiplier, the running product is added to a result when the multiplier has that power (`and`), and then doubled. A four-digit number takes at most 14 rounds, each about 100 instructions on numbers of four words.
+- **Where the time goes.** 509 of the 1,000 columns are multiplications, four each; they take nearly all of the run. A number of a + column is added straight to the total, about 45 instructions.
+- **Size:** about 660 words of code, variables and the powers of ten; the rest of the 5,668 words is the worksheet.
 
 ## Instruction set
 
