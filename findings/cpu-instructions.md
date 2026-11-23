@@ -21,6 +21,7 @@ Found on 2026-11-17 with small test programs run in the `vcb` engine on `cpu-32b
 - Naming two registers in one load (`rgA | rgAH`) puts the same word in both. Naming two in one store or push writes the OR of them. Neither is useful.
 - An address above `0x0FFF` cannot be an immediate. Keep it in a variable and load it.
 - Reading a variable through a pointer: `lib P; load rgB rgB; load rgA rgB`.
+- **The stack grows upwards from `0xE000`** (day 10, 2026-11-23): the first `psh` writes at `0xE000`, the next at `0xE001`. A `call` pushes two words (the address to return to and one more). A subroutine can call itself; what it must keep across the call goes on the stack with `psh` and comes back with `pop` in the opposite order.
 - **Loading all 32 bits of a register from two memory words needs the other register for the address** (day 8, 2026-11-23): `lib v + 1; load rgAH rgB; lib v; load rgA rgB` fills A and uses up B. A register cannot fill both its halves through its own address, because the first load leaves the address in its lower half and `lia`/`lib` clear the upper half. So two 32-bit operands cannot simply be loaded one after the other: load A, `psh rgAH; psh rgA`, load B (with A as the address), `pop rgA; pop rgAH`.
 - In a macro body the game's assembler (as the engine models it) does not take `lib a? + 1`; write `lib | (a? + 1)`.
 - `pop rgB; pop rgBH` after `psh rgAH; psh rgA` moves all 32 bits of A into B (day 8, 2026-11-23): a pop fills either half of either register, so the stack is a way to load B without an address in A.

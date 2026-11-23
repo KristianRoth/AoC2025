@@ -23,6 +23,7 @@ The CPU's board files for the Steam game Virtual Circuit Board (Update 1.0.1), a
 | `days/day9/cpu-32bit-autorun-aoc9p1.vcb` | The same for `days/day9/part1.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
 | `days/day9/cpu-32bit-autorun-aoc9p2.vcb` | The same for `days/day9/part2.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
 | `days/day10/cpu-32bit-autorun-aoc10p1.vcb` | The same for `days/day10/part1.vcbasm`; Persistent Memory `0x0100`–`0x0114`. |
+| `days/day10/cpu-32bit-autorun-aoc10p2.vcb` | The same for `days/day10/part2.vcbasm`; Persistent Memory `0x0100`–`0x0114`. |
 
 The boards differ only in those 24 latch pixels, in the assembly text they carry, and in the Persistent Memory range.
 
@@ -74,6 +75,8 @@ The rules the puzzles are solved under are in [`RULES.md`](RULES.md).
 | `days/day9/part2-example.vcbasm` | The same program with the puzzle's example as input (answer 24) |
 | `days/day10/part1.vcbasm` | Advent of Code day 10, part 1. The header says where the answer is left |
 | `days/day10/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 7) |
+| `days/day10/part2.vcbasm` | Advent of Code day 10, part 2. The header says where the answer is left |
+| `days/day10/part2-example.vcbasm` | The same program with the puzzle's example as input (answer 33) |
 
 ## How a solution is written
 
@@ -130,6 +133,8 @@ Measured in the `vcb` engine on `cpu-32bit-autorun-aoc1p1.vcb`, to the Breakpoin
 | Day 9 part 2 | 1539809693 | 1,329,065,552 | 3.5 s | 5,192,000 | 3,756 words |
 | Day 10 part 1, example | 7 | 1,645,840 | 0.02 s | 6,400 | 465 words |
 | Day 10 part 1 | 475 | 1,010,771,664 | 2.9 s | 3,948,000 | 9,846 words |
+| Day 10 part 2, example | 33 | 10,531,024 | 0.07 s | 41,000 | 1,549 words |
+| Day 10 part 2 | 18273 | 10,976,582,736 | 13 s | 42,877,000 | 10,930 words |
 
 "Instructions run" is the tick count divided by 256, the cost of most instructions:
 
@@ -240,13 +245,19 @@ Notes on the day 9 solutions:
 - **Part 2's time** (1.33 thousand million ticks, about 4.4 minutes in the game): the two sorts, the ranks and the sweep take about 0.2, trying the loop's own lines 0.2 (the best area grows many times there, and each time costs a square root of 21 multiplications), the walk about 0.9.
 - **Part 2's size:** about 1,770 words of code, variables and tables.
 
-Notes on the day 10 solution:
+Notes on the day 10 solutions:
 
 - **Lights are bits, a push is an xor.** The lights of a machine are the bits of one word and a button is the word with the bits of its lights. The CPU builds both from the input as the puzzle gives it (a 0 or 1 per light, the light numbers of each button).
 - **A search outwards from "all off".** The program visits the states one push away, then the new states one push from those, and so on, never a state twice. The first time the wanted pattern turns up, the pushes are the fewest. Trying every set of buttons would be up to 8,192 sets for a machine with 13 buttons; the search stops after a few hundred states.
 - **The table of visited states is never cleared:** a state counts as visited when its word holds the number of the machine at hand.
 - **Time:** 1.01 thousand million ticks for 178 machines, about 3.4 minutes in the game at 5 million ticks a second.
 - **Size:** about 370 words of code, variables and tables; the rest of the 9,846 words is the input.
+- **Part 2 halves the joltages.** The buttons pushed an odd number of times decide which counters end odd. So the program picks a set of buttons, pushed once each, that makes the right counters odd; what is left is even everywhere and is the same puzzle with all joltages halved, counted twice. The fewest pushes is the best over all such sets. The joltages halve each time, so this goes about nine deep for joltages up to 285.
+- **Part 2 finds those sets with part 1's xor.** Odd and even is on and off. While reading the buttons the program reduces their words against each other; that gives one set for any pattern of odd counters, and the few sets that change no counter's oddness. All sets for a pattern are the one xor some of those: 16 at most for this input.
+- **Part 2 keeps every result.** The same row of joltages comes up down many ways, so each result goes into a table found by a hash of the joltages. On the host the same method needs 343,344 tries without the table and 39,188 with it (at most 1,014 rows for one machine).
+- **Part 2 calls itself** and keeps its state on the CPU's stack, the first program here to do so.
+- **Part 2's time:** 11 thousand million ticks, about 37 minutes in the game at 5 million ticks a second. The engine ran it at 850 million ticks a second, faster than the other programs here; why was not looked into.
+- **Part 2's size:** about 1,450 words of code, variables and tables.
 
 ## Instruction set
 
