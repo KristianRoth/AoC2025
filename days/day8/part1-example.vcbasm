@@ -1,0 +1,604 @@
+# Advent of Code 2025, day 8 part 1 (Playground), with the puzzle's example as input (answer 40)
+#
+# THE PUZZLE
+# The input is a list of junction boxes, each a position X,Y,Z. The 10 pairs of boxes that are closest
+# together (straight-line distance) are connected. Boxes that are connected, directly or through other
+# boxes, form a circuit. The answer is the sizes of the three largest circuits multiplied together.
+#
+# THE IDEA
+# 20 boxes make 190 pairs. A distance needs three squares, and the CPU has no multiply, so
+# working out every distance is far too slow. But the 10 closest pairs are all short, and a pair
+# cannot be closer than its boxes are apart in X alone. So:
+#   1. COLLECT. Take a length T. Go through all pairs and drop a pair as soon as its boxes are T or more
+#      apart in X (one subtraction; nearly every pair goes here), then in Y, then in Z. For the few that
+#      are left work out D2 = dx*dx + dy*dy + dz*dz, the distance squared, and keep the pairs with
+#      D2 < T*T in a list. If the list has fewer than 10 pairs, T was too small: double it and start
+#      again. Otherwise the 10 closest pairs are all in the list: any pair not in it is at least T
+#      apart, and the list has 10 or more that are closer.
+#   2. SELECT. Find the largest number V for which fewer than 10 pairs of the list have D2 < V, bit by
+#      bit from the top bit down. Then the pairs with D2 <= V are the 10 closest.
+#   3. CONNECT. The order of connecting does not matter for what the circuits are in the end. Each box
+#      has a PARENT, at first itself. Following parents from a box ends at a box that is its own parent:
+#      the ROOT of its circuit. Connecting two boxes: find both roots; if they differ, make one the
+#      parent of the other.
+#   4. COUNT. For every box, add 1 to the SIZE of its root. Keep the three largest sizes; multiply them
+#      by adding.
+# Squaring is done in binary, as on paper: S*S is the sum of S*(the powers of two that S is made of),
+# and S*2 is one shift. Comparing D2, not the distance, avoids square roots: the order is the same.
+#
+# THE WHOLE PROGRAM IN PSEUDO CODE
+#     for every box P: PARENT[P] = P
+#     T = 1024
+#     loop:                                                         # COLLECT
+#         empty the list
+#         for every pair of boxes I, Q (Q after I in the input):
+#             if |x(I) - x(Q)| >= T or |y(I) - y(Q)| >= T or |z(I) - z(Q)| >= T: continue
+#             D2 = dx*dx + dy*dy + dz*dz
+#             if D2 < T*T: append (I, Q, D2) to the list
+#         if the list has K or more pairs: break
+#         T = T + T
+#     V = 0                                                         # SELECT
+#     for BIT in 2^29, 2^28, ..., 2, 1:
+#         if (number of pairs in the list with D2 < V + BIT) < K: V = V + BIT
+#     for every pair (I, Q, D2) of the list with D2 <= V:           # CONNECT
+#         RA = ROOT(I); RB = ROOT(Q)
+#         if RA != RB: PARENT[RB] = RA
+#     for every box P: SIZE[ROOT(P)] = SIZE[ROOT(P)] + 1            # COUNT
+#     M1, M2, M3 = the three largest SIZE
+#     ANSWER = M1 * M2 * M3
+#     write ANSWER as 10 decimal digits
+#     stop
+#
+# NUMBERS OF 32 BITS
+# A coordinate, D2, V and the answer are wider than a memory word. Each is two 16-bit words, lower word
+# first, and fits the 32-bit registers whole: get32A v loads both words of v into A, and one sum or sub
+# works on all 32 bits. Loading the two words of one register needs the other register for the address. A variable's upper word has the name of the variable with _H.
+#
+# THE RESULT, when the CPU stops on the Breakpoint at END
+#   0x0100-0x0101  the answer as two 16-bit words, lower first
+#   0x0110-0x0119  the answer as 10 decimal digits, one per word, most significant first
+#
+# THE INPUT (rule 1 of RULES.md), at 0x2000
+# Six words per box: X, Y, Z, each as two 16-bit words, lower word first (99967 = 0x0001_867F is stored
+# as 0x867F; 0x0001). After the last box come two words 0xFFFF. The number of connections to make is
+# the word K below (1000 for the puzzle, 10 for its example).
+# Built-in limits: at most 1,023 boxes; coordinates below 2^31; the K-th closest pair is closer than
+# 32,768 (T may not grow beyond that: the squares must fit 32 bits); COLLECT's last list has at most
+# 9,216 pairs; no two pairs at exactly the distance of the K-th closest (the puzzle would not say which
+# to take; the program would connect both); there are at least K pairs.
+#
+# THE IDIOMS (v is a variable's address, below 0x1000)
+#     getA v / getB v          A or B = the word at v, upper half 0
+#     putA v                   the word at v = A   (this uses up B)
+#     get32A v / get32B v      A or B = the 32-bit number at v and v + 1; loading one register uses up the other
+#     get32AB v w              A = the 32-bit number at v, B = the one at w (A waits on the stack while B is loaded)
+#     put32A v                 the 32-bit number at v and v + 1 = A   (this uses up B)
+#     getAat p / putAat p      the same as getA / putA for the word the pointer p points at
+#     getAoff p k              A = the word at the address (p + k); p is a variable holding an address
+#     copy v w                 w = v
+#     if_eq L                  compares A with B as they are now
+#     sub; if_carry L          after A - B: taken when A >= B
+# |a - b| is: sub; when that went below 0, flip every bit (neg) and add 1.
+# What each instruction does exactly is in findings/cpu-instructions.md.
+#
+# MEMORY MAP
+#   0x0100-0x0151  variables            0x2000-  the boxes (20 and the end mark end at 0x2079)
+#   0x1000-        the program          0x3800-  PARENT and SIZE: for the box at address P, PARENT is the word
+#   0x1800-        the subroutines               at P + 0x1800 and SIZE the word at P + 0x1801; all 0 at the start
+#   0x1E00-        POWERS: 10^9 down to 1, two words each, then 0
+#   0x1E40-        BITS: 2^29 down to 1, two words each, then 0, 0
+#   0x5000-0xDFFF  the list: four words per pair (address of I, address of Q, D2 lower word, D2 upper word)
+#   0xFF00         where the CPU starts
+
+# ---- The CPU's instructions as symbols (day 1's table without its _32 names, which the CPU ignores) ----
+symbol nop 0b0000_0000_0000_0000            # the word 0: stops the CPU (the same word as non)
+symbol ld  0b0010_0000_0000_0000            # load a register from memory (used through the load macro)
+symbol lia 0b0011_0000_0000_0000            # lia n: A = n (0 to 4095), upper half 0
+symbol lib 0b0100_0000_0000_0000            # lib n: B = n (0 to 4095), upper half 0
+symbol sto 0b0101_0000_0000_0000            # store a register to memory (used through the store macro)
+
+macro  load  { ld  | a? | (b? >> 6) }       # load X Y: X = the word at the address in Y
+macro  store { sto | a? | (b? >> 6) }       # store X Y: the word at the address in Y = X
+
+symbol sum    0b0110_0100_0000_0000         # A = A + B (32 bits), sets zero, carry, nega
+symbol sub    0b0110_0010_0000_0000         # A = A - B (32 bits), sets zero, carry, nega
+symbol shf    0b0110_0001_0000_0000         # shf | k: A = A shifted left by k (0 to 15)
+symbol and    0b0110_0000_1000_0000         # A = A and B
+symbol or     0b0110_0000_0100_0000         # A = A or B
+symbol xor    0b0110_0000_0010_0000         # A = A xor B
+symbol neg    0b0110_0000_0001_0000         # A = every bit of A flipped
+
+symbol psh 0b1010_0000_0000_0000            # psh X: push the 16 bits of X
+symbol pop 0b1011_0000_0000_0000            # pop X: pop 16 bits into X
+
+symbol jmp  0b1100_0000_0000_0000           # jmp; L: go to L.  jmp c; L: go to L when c holds
+symbol call 0b1110_0000_0000_0000           # call; L: run the subroutine at L
+symbol ret  0b1111_0000_0000_0000           # return from a subroutine
+
+# The registers, as load, store, psh and pop name them
+symbol rgAH 0b1000_0000_0000                # the upper 16 bits of A
+symbol rgA  0b0100_0000_0000                # the lower 16 bits of A
+symbol rgBH 0b0010_0000_0000                # the upper 16 bits of B
+symbol rgB  0b0001_0000_0000                # the lower 16 bits of B
+symbol rgSP 0b0000_1000_0000                # the program counter (leave alone)
+symbol rgSB 0b0000_0100_0000                # the stack pointer (leave alone)
+symbol non  0                               # stops the CPU (Breakpoint): the end of the program
+
+# The conditions of jmp
+symbol zero  0b1000_0000_0000               # the last sum or sub gave 0
+symbol carry 0b0100_0000_0000               # the last sum carried, or the last sub did not borrow (A >= B)
+symbol nega  0b0010_0000_0000               # the last sub went below 0 (A < B)
+symbol eq    0b0001_0000_0000               # A == B right now
+symbol neq   0b0000_1000_0000               # A != B right now
+
+# ---- Macros for the common operations (explained in the README). A macro cannot use another macro, so
+#      load and store are spelled out here. v: a variable, p: a variable holding an address, L: a label ----
+macro getA     { lia a?; ld | rgA | (rgA >> 6) }                                              # A = v
+macro getB     { lib a?; ld | rgB | (rgB >> 6) }                                              # B = v
+macro putA     { lib a?; sto | rgA | (rgB >> 6) }                                             # v = A (uses B)
+macro getAat   { lia a?; ld | rgA | (rgA >> 6); ld | rgA | (rgA >> 6) }                       # A = the word p points at
+macro putAat   { lib a?; ld | rgB | (rgB >> 6); sto | rgA | (rgB >> 6) }                      # the word p points at = A (uses B)
+macro inc      { lia a?; ld | rgA | (rgA >> 6); lib 1; sum; lib a?; sto | rgA | (rgB >> 6) }  # v = v + 1 (uses A and B)
+macro goto     { jmp; a? }                                                                    # go to L
+macro if_eq    { jmp eq; a? }                                                                 # go to L when A == B
+macro do       { call; a? }                                                                   # call the subroutine L
+macro if_carry { jmp carry; a? }                                                              # go to L after a sub when A >= B
+macro getAoff  { lia a?; ld | rgA | (rgA >> 6); lib b?; sum; ld | rgA | (rgA >> 6) }                # A = the word at (p + k) (uses B)
+macro copy     { lia a?; ld | rgA | (rgA >> 6); lib b?; sto | rgA | (rgB >> 6) }                      # w = v (uses A and B)
+macro get32A   { lib | (a? + 1); ld | rgAH | (rgB >> 6); lib a?; ld | rgA | (rgB >> 6) }                  # A = the 32 bits at v, v + 1 (uses B)
+macro get32B   { lia | (a? + 1); ld | rgBH | (rgA >> 6); lia a?; ld | rgB | (rgA >> 6) }                  # B = the 32 bits at v, v + 1 (uses A)
+macro get32AB  { lib | (a? + 1); ld | rgAH | (rgB >> 6); lib a?; ld | rgA | (rgB >> 6); psh rgAH; psh rgA; lia | (b? + 1); ld | rgBH | (rgA >> 6); lia b?; ld | rgB | (rgA >> 6); pop rgA; pop rgAH }
+# get32AB v w: A = the 32 bits at v, B = the 32 bits at w
+macro put32A   { lib a?; sto | rgA | (rgB >> 6); lib | (a? + 1); sto | rgAH | (rgB >> 6) }                # the 32 bits at v, v + 1 = A (uses B)
+
+# ---- Variables (all below 0x1000, so lia/lib can address them). NAME_H is the upper word of the 32-bit NAME ----
+# The result
+pointer ANSWER 0x0100 0
+pointer ANSWER_H 0x0101 0
+# K: the number of connections to make (the puzzle's text gives it). KWORDS: the length of K pairs in the list
+pointer K 0x0120 10
+pointer KWORDS 0x0121 0
+# T: pairs T or more apart in one direction are dropped. TSQ = T * T
+pointer T 0x0122 1024
+pointer TSQ 0x0123 0
+pointer TSQ_H 0x0124 0x0010
+# P: the address of a box, for the loops over all boxes. PEND: the address after the last box
+pointer P 0x0125 0x2000
+pointer PEND 0x0126 0
+# I, Q: the addresses of the two boxes of a pair. XI, YI, ZI: a copy of I's position
+pointer I 0x0127 0
+pointer Q 0x0128 0
+pointer XI 0x0129 0
+pointer XI_H 0x012A 0
+pointer YI 0x012B 0
+pointer YI_H 0x012C 0
+pointer ZI 0x012D 0
+pointer ZI_H 0x012E 0
+# CJ: a copy of one coordinate of Q. DX, DY, DZ: how far apart the pair is in each direction (below T)
+pointer CJ 0x012F 0
+pointer CJ_H 0x0130 0
+pointer DX 0x0131 0
+pointer DY 0x0132 0
+pointer DZ 0x0133 0
+# D2: the distance of a pair, squared
+pointer D2 0x0134 0
+pointer D2_H 0x0135 0
+# For ADD_SQUARE: S the number to square, DOUBLED = S * BIT, BIT the power of two being looked at
+pointer S 0x0136 0
+pointer DOUBLED 0x0137 0
+pointer DOUBLED_H 0x0138 0
+pointer BIT 0x0139 0
+# LIST_END: the address after the last pair of the list. E: the address of the pair of the list being looked at
+pointer LIST_END 0x013A 0
+pointer E 0x013B 0
+# For SELECT: V the number being built, STEP the power of two being tried, LIMIT = V + STEP, COUNT the pairs below LIMIT
+pointer V 0x013C 0
+pointer V_H 0x013D 0
+pointer STEP 0x013E 0
+pointer STEP_H 0x013F 0
+pointer LIMIT 0x0140 0
+pointer LIMIT_H 0x0141 0
+pointer COUNT 0x0142 0
+pointer BP 0x0143 0x1E40
+# F: FIND starts at the box at F and leaves the root of its circuit in F. RA: the root of the pair's first box
+pointer F 0x0144 0
+pointer RA 0x0145 0
+# ADR: an address worked out for a store. M1 >= M2 >= M3: the three largest sizes. SIZE: the size being looked at
+pointer ADR 0x0146 0
+pointer M1 0x0147 0
+pointer M2 0x0148 0
+pointer M3 0x0149 0
+pointer SIZE 0x014A 0
+# For the products: PRODUCT = M1 * M2, TIMES counts the additions down
+pointer PRODUCT 0x014B 0
+pointer PRODUCT_H 0x014C 0
+pointer TIMES 0x014D 0
+# For the decimal digits: what is left of the answer, the current power of ten, how often it fitted
+pointer REST 0x0102 0
+pointer REST_H 0x0103 0
+pointer POWER 0x0104 0
+pointer POWER_H 0x0105 0
+pointer DIGIT_VALUE 0x0106 0
+# Pointers: DIGIT the next digit to write, POW the next power of ten
+pointer DIGIT 0x0107 0x0110
+pointer POW 0x0108 0x1E00
+# Constants that do not fit an instruction's place for a number
+pointer POINTS 0x014E 0x2000
+pointer LIST 0x014F 0x5000
+pointer TO_PARENT 0x0150 0x1800
+pointer TO_SIZE 0x0151 0x1801
+pointer END_MARK 0x0109 0xFFFF
+
+# ---- The CPU starts at 0xFF00 ----
+origin 0xFF00
+goto MAIN
+
+origin 0x1000
+@ MAIN
+# ==== every box is its own circuit ====
+#     while the box at P is not the end mark: PARENT[P] = P; P = P + 6      # P starts at the first box
+#     PEND = P
+#     KWORDS = K * 4
+@ INIT_NEXT
+	getAoff P 1; getB END_MARK                                   # A = the upper word of the box's X, B = 0xFFFF
+	if_eq INIT_DONE                                              # the end mark: no more boxes
+	getA P; getB TO_PARENT; sum                                  # A = P + 0x1800, the address of the box's PARENT
+	getB P; store rgB rgA                                        # PARENT[P] = P
+	getA P; lib 6; sum; putA P                                   # P = P + 6, the next box
+	goto INIT_NEXT
+@ INIT_DONE
+	copy P PEND                                                  # PEND = the address after the last box
+	getA K; shf | 2; putA KWORDS                                 # KWORDS = K * 4: a pair takes four words in the list
+
+# ==== COLLECT: the pairs closer than T ====
+#     LIST_END = LIST                                       # the list is empty
+#     for I = first box; I != PEND; I = I + 6:
+#         XI, YI, ZI = the position of I
+#         for Q = I + 6; Q != PEND; Q = Q + 6:
+#             (the pair I, Q: below)
+#     if LIST_END - LIST < KWORDS: T = T + T; TSQ = TSQ * 4; start again
+@ COLLECT
+	copy LIST LIST_END                                           # the list is empty
+	copy POINTS I                                                # I = the first box
+@ NEXT_I
+	getA I; getB PEND                                            # A = I, B = PEND
+	if_eq COLLECTED                                              # every box has been I
+	getAat I; putA XI                                            # XI = the X of I; lower word
+	getAoff I 1; putA XI_H                                       # upper word
+	getAoff I 2; putA YI                                         # YI = the Y of I; lower word
+	getAoff I 3; putA YI_H                                       # upper word
+	getAoff I 4; putA ZI                                         # ZI = the Z of I; lower word
+	getAoff I 5; putA ZI_H                                       # upper word
+	getA I; lib 6; sum; putA Q                                   # Q = I + 6, the box after I
+
+# ---- one pair. This is where the time goes: the rows down to NEXT_Q's first test run for every pair ----
+#     if |x(Q) - XI| >= T: goto NEXT_Q
+#     if |y(Q) - YI| >= T: goto NEXT_Q
+#     if |z(Q) - ZI| >= T: goto NEXT_Q
+#     D2 = DX*DX + DY*DY + DZ*DZ
+#     if D2 >= TSQ: goto NEXT_Q
+#     append I, Q, D2 to the list
+@ NEXT_PAIR
+	getA Q; getB PEND                                            # A = Q, B = PEND
+	if_eq END_OF_I                                               # no box is left to pair I with
+	getAoff Q 1; shf | 8; shf | 8                                # A = the upper word of Q's X, moved into the upper half of A
+	getB Q; load rgA rgB                                         # the lower half of A = the lower word: A = Q's X
+	psh rgAH; psh rgA; get32B XI; pop rgA; pop rgAH              # B = I's X (loading B uses A, so A waits on the stack)
+	sub                                                          # A = the difference, 32 bits
+	if_carry X_POSITIVE                                          # it did not go below 0
+	neg; lib 1; sum                                              # below 0: A = -A (flip every bit, add 1)
+@ X_POSITIVE
+	getB T; sub                                                  # A = the distance in this direction - T
+	if_carry NEXT_Q                                              # T or more apart: this pair is not among the closest
+	sum; putA DX                                                 # DX = the distance in this direction (A + T again; B still holds T)
+	getAoff Q 2; putA CJ                                         # CJ = Q's Y; lower word
+	getAoff Q 3; putA CJ_H                                       # upper word
+	get32AB CJ YI                                                # A = Q's Y, B = I's Y
+	sub                                                          # A = the difference, 32 bits
+	if_carry Y_POSITIVE                                          # it did not go below 0
+	neg; lib 1; sum                                              # below 0: A = -A (flip every bit, add 1)
+@ Y_POSITIVE
+	getB T; sub                                                  # A = the distance in this direction - T
+	if_carry NEXT_Q                                              # T or more apart: this pair is not among the closest
+	sum; putA DY                                                 # DY = the distance in this direction (A + T again; B still holds T)
+	getAoff Q 4; putA CJ                                         # CJ = Q's Z; lower word
+	getAoff Q 5; putA CJ_H                                       # upper word
+	get32AB CJ ZI                                                # A = Q's Z, B = I's Z
+	sub                                                          # A = the difference, 32 bits
+	if_carry Z_POSITIVE                                          # it did not go below 0
+	neg; lib 1; sum                                              # below 0: A = -A (flip every bit, add 1)
+@ Z_POSITIVE
+	getB T; sub                                                  # A = the distance in this direction - T
+	if_carry NEXT_Q                                              # T or more apart: this pair is not among the closest
+	sum; putA DZ                                                 # DZ = the distance in this direction (A + T again; B still holds T)
+	lia 0; putA D2; putA D2_H                                    # D2 = 0
+	copy DX S; do ADD_SQUARE                                     # D2 = D2 + DX * DX
+	copy DY S; do ADD_SQUARE                                     # D2 = D2 + DY * DY
+	copy DZ S; do ADD_SQUARE                                     # D2 = D2 + DZ * DZ
+	get32AB D2 TSQ; sub                                          # A = D2 - TSQ
+	if_carry NEXT_Q                                              # D2 >= T * T: the pair is T or more apart
+	getA I; putAat LIST_END; inc LIST_END                        # append to the list: the address of I
+	getA Q; putAat LIST_END; inc LIST_END                        # the address of Q
+	getA D2; putAat LIST_END; inc LIST_END                       # the lower word of D2
+	getA D2_H; putAat LIST_END; inc LIST_END                     # the upper word of D2
+@ NEXT_Q
+	getA Q; lib 6; sum; putA Q                                   # Q = Q + 6, the next box
+	goto NEXT_PAIR
+@ END_OF_I
+	getA I; lib 6; sum; putA I                                   # I = I + 6, the next box
+	goto NEXT_I
+@ COLLECTED
+	getA LIST_END; getB LIST; sub                                # A = LIST_END - LIST, the words in the list
+	getB KWORDS; sub                                             # A = that - KWORDS
+	if_carry SELECT                                              # K pairs or more: the K closest are all in the list
+	getA T; shf | 1; putA T                                      # too few: T = T * 2
+	get32A TSQ; shf | 2; put32A TSQ                              # TSQ = TSQ * 4
+	goto COLLECT
+
+# ==== SELECT: V = the D2 of the K-th closest pair ====
+#     V = 0
+#     for STEP in 2^29, 2^28, ..., 2, 1:                    # from the table BITS, which ends in 0
+#         LIMIT = V + STEP
+#         COUNT = the number of pairs in the list with D2 < LIMIT
+#         if COUNT < K: V = LIMIT
+# In the end fewer than K pairs have D2 < V, and K or more have D2 < V + 1: V is the K-th smallest D2.
+@ SELECT
+	lia 0; putA V; putA V_H                                      # V = 0
+@ NEXT_STEP
+	getAat BP; putA STEP                                         # STEP = the next power of two; lower word
+	getAoff BP 1; putA STEP_H                                    # upper word
+	get32A STEP; lib 0                                           # A = STEP, B = 0
+	if_eq SELECTED                                               # the 0 that ends the table
+	getA BP; lib 2; sum; putA BP                                 # BP = BP + 2
+	get32AB V STEP; sum; put32A LIMIT                            # LIMIT = V + STEP
+	lia 0; putA COUNT                                            # COUNT = 0
+	copy LIST E                                                  # E = the first pair of the list
+@ COUNT_NEXT
+	getA E; getB LIST_END                                        # A = E, B = LIST_END
+	if_eq COUNTED                                                # the end of the list
+	getAoff E 2; putA D2                                         # D2 = the pair's D2; lower word
+	getAoff E 3; putA D2_H                                       # upper word
+	get32AB D2 LIMIT; sub                                        # A = D2 - LIMIT
+	if_carry COUNT_STEP                                          # D2 >= LIMIT: not counted
+	inc COUNT                                                    # COUNT = COUNT + 1
+@ COUNT_STEP
+	getA E; lib 4; sum; putA E                                   # E = E + 4, the next pair
+	goto COUNT_NEXT
+@ COUNTED
+	getA COUNT; getB K; sub                                      # A = COUNT - K
+	if_carry NEXT_STEP                                           # K or more pairs are below LIMIT: V stays
+	copy LIMIT V; copy LIMIT_H V_H                               # fewer than K: V = LIMIT
+	goto NEXT_STEP
+
+# ==== CONNECT: join the two boxes of every pair with D2 <= V ====
+#     LIMIT = V + 1
+#     for every pair (I, Q, D2) of the list with D2 < LIMIT:
+#         RA = ROOT(I); F = ROOT(Q)
+#         if F != RA: PARENT[F] = RA
+@ SELECTED
+	get32A V; lib 1; sum; put32A LIMIT                           # LIMIT = V + 1
+	copy LIST E                                                  # E = the first pair of the list
+@ CONNECT_NEXT
+	getA E; getB LIST_END                                        # A = E, B = LIST_END
+	if_eq CONNECTED                                              # the end of the list
+	getAoff E 2; putA D2                                         # D2 = the pair's D2; lower word
+	getAoff E 3; putA D2_H                                       # upper word
+	get32AB D2 LIMIT; sub                                        # A = D2 - LIMIT
+	if_carry CONNECT_STEP                                        # D2 > V: not one of the K closest
+	getAat E; putA F; do FIND                                    # F = the root of the pair's first box
+	copy F RA                                                    # RA = that root
+	getAoff E 1; putA F; do FIND                                 # F = the root of the pair's second box
+	getA F; getB RA                                              # A = F, B = RA
+	if_eq CONNECT_STEP                                           # the same root: the boxes are in one circuit already
+	getA F; getB TO_PARENT; sum                                  # A = F + 0x1800, the address of F's PARENT
+	getB RA; store rgB rgA                                       # PARENT[F] = RA: the two circuits are one
+@ CONNECT_STEP
+	getA E; lib 4; sum; putA E                                   # E = E + 4, the next pair
+	goto CONNECT_NEXT
+
+# ==== COUNT: the size of every circuit, kept at its root ====
+#     for every box P: F = ROOT(P); SIZE[F] = SIZE[F] + 1
+@ CONNECTED
+	copy POINTS P                                                # P = the first box
+@ SIZE_NEXT
+	getA P; getB PEND                                            # A = P, B = PEND
+	if_eq SIZED                                                  # every box is counted
+	copy P F; do FIND                                            # F = the root of P's circuit
+	getA F; getB TO_SIZE; sum; putA ADR                          # ADR = F + 0x1801, the address of the root's SIZE
+	getAat ADR; lib 1; sum; putAat ADR                           # SIZE[F] = SIZE[F] + 1
+	getA P; lib 6; sum; putA P                                   # P = P + 6, the next box
+	goto SIZE_NEXT
+
+# ==== the three largest sizes ====
+#     for every box P:                                      # a box that is not a root has SIZE 0
+#         if SIZE[P] >= M1: M3 = M2; M2 = M1; M1 = SIZE[P]
+#         else if SIZE[P] >= M2: M3 = M2; M2 = SIZE[P]
+#         else if SIZE[P] >= M3: M3 = SIZE[P]
+@ SIZED
+	copy POINTS P                                                # P = the first box
+@ TOP_NEXT
+	getA P; getB PEND                                            # A = P, B = PEND
+	if_eq TOP_DONE                                               # every box has been looked at
+	getA P; getB TO_SIZE; sum; load rgA rgA; putA SIZE           # SIZE = SIZE[P]
+	getB M1; sub                                                 # A = SIZE - M1 (A still holds SIZE)
+	if_carry NEW_FIRST                                           # SIZE >= M1
+	getA SIZE; getB M2; sub                                      # A = SIZE - M2
+	if_carry NEW_SECOND                                          # SIZE >= M2
+	getA SIZE; getB M3; sub                                      # A = SIZE - M3
+	if_carry NEW_THIRD                                           # SIZE >= M3
+@ TOP_STEP
+	getA P; lib 6; sum; putA P                                   # P = P + 6, the next box
+	goto TOP_NEXT
+@ NEW_FIRST
+	copy M2 M3; copy M1 M2; copy SIZE M1                         # M3 = M2; M2 = M1; M1 = SIZE
+	goto TOP_STEP
+@ NEW_SECOND
+	copy M2 M3; copy SIZE M2                                     # M3 = M2; M2 = SIZE
+	goto TOP_STEP
+@ NEW_THIRD
+	copy SIZE M3                                                 # M3 = SIZE
+	goto TOP_STEP
+
+# ==== ANSWER = M1 * M2 * M3, by adding ====
+#     PRODUCT = 0; repeat M2 times: PRODUCT = PRODUCT + M1
+#     ANSWER = 0;  repeat M3 times: ANSWER = ANSWER + PRODUCT
+# The sizes are small (they add up to at most the number of boxes), so counting is quick enough.
+@ TOP_DONE
+	lia 0; putA PRODUCT; putA PRODUCT_H                          # PRODUCT = 0
+	copy M2 TIMES                                                # TIMES = M2
+@ FIRST_PRODUCT
+	getA TIMES; lib 0                                            # A = TIMES, B = 0
+	if_eq FIRST_PRODUCT_DONE                                     # M1 has been added M2 times
+	lib 1; sub; putA TIMES                                       # TIMES = TIMES - 1
+	get32A PRODUCT; getB M1; sum; put32A PRODUCT                 # PRODUCT = PRODUCT + M1
+	goto FIRST_PRODUCT
+@ FIRST_PRODUCT_DONE
+	copy M3 TIMES                                                # TIMES = M3   (ANSWER is 0 from the start)
+@ SECOND_PRODUCT
+	getA TIMES; lib 0                                            # A = TIMES, B = 0
+	if_eq WRITE_ANSWER                                           # PRODUCT has been added M3 times
+	lib 1; sub; putA TIMES                                       # TIMES = TIMES - 1
+	get32AB ANSWER PRODUCT; sum; put32A ANSWER                   # ANSWER = ANSWER + PRODUCT
+	goto SECOND_PRODUCT
+
+# ==== write ANSWER as 10 decimal digits ====
+# A digit is how often a power of ten fits into what is left. Without division that is counting:
+#     REST = ANSWER
+#     for POWER in 10^9, 10^8, ..., 10, 1:                  # the table ends at a lower word of 0
+#         DIGIT_VALUE = 0
+#         while REST >= POWER: REST = REST - POWER; DIGIT_VALUE = DIGIT_VALUE + 1
+#         memory[DIGIT] = DIGIT_VALUE; DIGIT = DIGIT + 1
+# (The lower word of a power of ten up to 10^15 is never 0, so a 0 there can end the table.)
+@ WRITE_ANSWER
+	copy ANSWER REST; copy ANSWER_H REST_H                       # REST = ANSWER
+@ NEXT_POWER
+	getAat POW                                                   # A = the lower word of the next power of ten
+	lib 0                                                        # B = 0
+	if_eq END                                                    # a lower word of 0 ends the table
+	putA POWER                                                   # POWER = the power of ten; lower word
+	getAoff POW 1; putA POWER_H                                  # upper word
+	getA POW; lib 2; sum; putA POW                               # POW = POW + 2
+	lia 0; putA DIGIT_VALUE                                      # DIGIT_VALUE = 0
+@ FITS_AGAIN
+	get32AB REST POWER; sub                                      # A = REST - POWER
+	if_carry FITS                                                # REST >= POWER: it fits once more
+	getA DIGIT_VALUE; putAat DIGIT                               # memory[DIGIT] = DIGIT_VALUE
+	inc DIGIT                                                    # DIGIT = DIGIT + 1
+	goto NEXT_POWER
+@ FITS
+	put32A REST                                                  # REST = REST - POWER   (A still holds the difference)
+	inc DIGIT_VALUE                                              # DIGIT_VALUE = DIGIT_VALUE + 1
+	goto FITS_AGAIN
+
+# The word 0 stops the CPU on its Breakpoint.
+@ END
+	non
+
+# ---- Subroutines ----
+origin 0x1800
+# ADD_SQUARE: D2 = D2 + S * S, for S below 32,768.
+#     DOUBLED = S; BIT = 1
+#     while BIT <= S:
+#         if (S and BIT) != 0: D2 = D2 + DOUBLED            # S has this power of two
+#         DOUBLED = DOUBLED * 2                             # DOUBLED is S * BIT
+#         BIT = BIT * 2
+@ ADD_SQUARE
+	copy S DOUBLED; lia 0; putA DOUBLED_H                        # DOUBLED = S
+	lia 1; putA BIT                                              # BIT = 1
+@ SQUARE_ROUND
+	getA S; getB BIT; sub                                        # A = S - BIT
+	if_carry SQUARE_BIT                                          # S >= BIT: there may be more to add
+	ret
+@ SQUARE_BIT
+	getA S; getB BIT; and                                        # A = S and BIT
+	lib 0                                                        # B = 0
+	if_eq SQUARE_DOUBLE                                          # S does not have this power of two
+	get32AB D2 DOUBLED; sum; put32A D2                           # D2 = D2 + DOUBLED
+@ SQUARE_DOUBLE
+	get32A DOUBLED; shf | 1; put32A DOUBLED                      # DOUBLED = DOUBLED * 2
+	getA BIT; shf | 1; putA BIT                                  # BIT = BIT * 2
+	goto SQUARE_ROUND
+
+# FIND: F = the root of the circuit of the box at F.
+#     while PARENT[F] != F: F = PARENT[F]
+@ FIND
+	getA F; getB TO_PARENT; sum; load rgA rgA                    # A = PARENT[F], the word at F + 0x1800
+	getB F                                                       # B = F
+	if_eq FIND_DONE                                              # F is its own parent: the root
+	putA F                                                       # F = PARENT[F]
+	goto FIND
+@ FIND_DONE
+	ret
+
+# ---- Powers of ten for the decimal digits: 10^9 down to 1, two words each, lower first; then 0 ----
+origin 0x1E00
+0xCA00; 0x3B9A    # 1000000000
+0xE100; 0x05F5    # 100000000
+0x9680; 0x0098    # 10000000
+0x4240; 0x000F    # 1000000
+0x86A0; 0x0001    # 100000
+0x2710; 0x0000    # 10000
+0x03E8; 0x0000    # 1000
+0x0064; 0x0000    # 100
+0x000A; 0x0000    # 10
+0x0001; 0x0000    # 1
+0
+
+# ---- Powers of two for SELECT: 2^29 down to 1, two words each, lower first; then 0, 0 ----
+origin 0x1E40
+0x0000; 0x2000    # 2^29
+0x0000; 0x1000    # 2^28
+0x0000; 0x0800    # 2^27
+0x0000; 0x0400    # 2^26
+0x0000; 0x0200    # 2^25
+0x0000; 0x0100    # 2^24
+0x0000; 0x0080    # 2^23
+0x0000; 0x0040    # 2^22
+0x0000; 0x0020    # 2^21
+0x0000; 0x0010    # 2^20
+0x0000; 0x0008    # 2^19
+0x0000; 0x0004    # 2^18
+0x0000; 0x0002    # 2^17
+0x0000; 0x0001    # 2^16
+0x8000; 0x0000    # 2^15
+0x4000; 0x0000    # 2^14
+0x2000; 0x0000    # 2^13
+0x1000; 0x0000    # 2^12
+0x0800; 0x0000    # 2^11
+0x0400; 0x0000    # 2^10
+0x0200; 0x0000    # 2^9
+0x0100; 0x0000    # 2^8
+0x0080; 0x0000    # 2^7
+0x0040; 0x0000    # 2^6
+0x0020; 0x0000    # 2^5
+0x0010; 0x0000    # 2^4
+0x0008; 0x0000    # 2^3
+0x0004; 0x0000    # 2^2
+0x0002; 0x0000    # 2^1
+0x0001; 0x0000    # 2^0
+0; 0
+
+# ---- The boxes: 20, then the end mark ----
+# Six words per box: X, Y, Z, each lower word first.
+origin 0x2000
+0x00A2; 0x0000; 0x0331; 0x0000; 0x032C; 0x0000    # 162,817,812
+0x0039; 0x0000; 0x026A; 0x0000; 0x0039; 0x0000    # 57,618,57
+0x038A; 0x0000; 0x0168; 0x0000; 0x0230; 0x0000    # 906,360,560
+0x0250; 0x0000; 0x01DF; 0x0000; 0x03AC; 0x0000    # 592,479,940
+0x0160; 0x0000; 0x0156; 0x0000; 0x012C; 0x0000    # 352,342,300
+0x01D2; 0x0000; 0x029C; 0x0000; 0x009E; 0x0000    # 466,668,158
+0x021E; 0x0000; 0x001D; 0x0000; 0x00EC; 0x0000    # 542,29,236
+0x01AF; 0x0000; 0x0339; 0x0000; 0x03DC; 0x0000    # 431,825,988
+0x02E3; 0x0000; 0x028A; 0x0000; 0x01D2; 0x0000    # 739,650,466
+0x0034; 0x0000; 0x01D6; 0x0000; 0x029C; 0x0000    # 52,470,668
+0x00D8; 0x0000; 0x0092; 0x0000; 0x03D1; 0x0000    # 216,146,977
+0x0333; 0x0000; 0x03DB; 0x0000; 0x0012; 0x0000    # 819,987,18
+0x0075; 0x0000; 0x00A8; 0x0000; 0x0212; 0x0000    # 117,168,530
+0x0325; 0x0000; 0x0060; 0x0000; 0x02CB; 0x0000    # 805,96,715
+0x015A; 0x0000; 0x03B5; 0x0000; 0x01D2; 0x0000    # 346,949,466
+0x03CA; 0x0000; 0x0267; 0x0000; 0x0058; 0x0000    # 970,615,88
+0x03AD; 0x0000; 0x03E1; 0x0000; 0x0154; 0x0000    # 941,993,340
+0x035E; 0x0000; 0x003D; 0x0000; 0x0023; 0x0000    # 862,61,35
+0x03D8; 0x0000; 0x005C; 0x0000; 0x0158; 0x0000    # 984,92,344
+0x01A9; 0x0000; 0x02B2; 0x0000; 0x02B1; 0x0000    # 425,690,689
+0xFFFF; 0xFFFF    # the end mark
