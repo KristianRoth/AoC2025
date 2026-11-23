@@ -23,6 +23,8 @@ Found on 2026-11-17 with small test programs run in the `vcb` engine on `cpu-32b
 - Reading a variable through a pointer: `lib P; load rgB rgB; load rgA rgB`.
 - **Loading all 32 bits of a register from two memory words needs the other register for the address** (day 8, 2026-11-23): `lib v + 1; load rgAH rgB; lib v; load rgA rgB` fills A and uses up B. A register cannot fill both its halves through its own address, because the first load leaves the address in its lower half and `lia`/`lib` clear the upper half. So two 32-bit operands cannot simply be loaded one after the other: load A, `psh rgAH; psh rgA`, load B (with A as the address), `pop rgA; pop rgAH`.
 - In a macro body the game's assembler (as the engine models it) does not take `lib a? + 1`; write `lib | (a? + 1)`.
+- `pop rgB; pop rgBH` after `psh rgAH; psh rgA` moves all 32 bits of A into B (day 8, 2026-11-23): a pop fills either half of either register, so the stack is a way to load B without an address in A.
+- A label cannot be the value of a `pointer` (the engine's assembler refuses it: the game's result is not known). Give a table a fixed `origin` and write that address.
 
 ## Arithmetic and logic
 All work on the full 32 bits: A = A op B.
