@@ -1,0 +1,662 @@
+# Advent of Code 2025, day 9 part 1 (Movie Theater), with the puzzle's example as input (answer 50)
+#
+# THE PUZZLE
+# The input is a list of red tiles, each a position X,Y on a floor of square tiles. The answer is the
+# area of the largest rectangle that has red tiles at two opposite corners: for tiles at (x1,y1) and
+# (x2,y2) that is (|x1 - x2| + 1) * (|y1 - y2| + 1) tiles.
+#
+# THE IDEA
+# 8 tiles make 28 pairs, and an area is a multiplication the CPU has to do by doubling and adding.
+# So the program only multiplies for pairs that can beat the best area so far.
+#   - A rectangle W wide and H high has area at most ((W + H) / 2) squared. With R = the whole part of
+#     2 * (square root of BEST), a pair with W + H <= R cannot beat BEST.
+#   - W + H - 2 = |x1 - x2| + |y1 - y2|, and that is the larger of |S1 - S2| and |D1 - D2|, where
+#     S = X + Y and D = X - Y. So a pair worth a look is far apart in S or far apart in D.
+#   - The tiles are sorted twice, by S and by D. In a sorted list the pairs farthest apart are those
+#     made of its two ends, so the program walks inwards from both ends and stops as soon as the keys
+#     are no more than R - 2 apart. That is done once in the list sorted by S and once in the other.
+#   - Before that the two ends of each list are tried as a pair: that already gives a good BEST and R.
+# The example: the tiles with the smallest and the largest S are 2,3 (S = 5) and 11,7 (S = 18):
+# area 10 * 5 = 50, so R = 14 (14 * 14 = 196 <= 200). After that only pairs with keys more than 12
+# apart are looked at; none beats 50.
+#
+# THE WHOLE PROGRAM IN PSEUDO CODE
+#     for every tile P: S[P] = X + Y; D[P] = X - Y + 2^31; put P's address in the lists BY_S and BY_D
+#     sort BY_S by S; sort BY_D by D
+#     BEST = 0; R = 0
+#     EVALUATE(first of BY_S, last of BY_S); EVALUATE(first of BY_D, last of BY_D)
+#     SCAN(BY_S); SCAN(BY_D)
+#     write BEST as 15 decimal digits
+#     stop
+#
+#     SCAN(a sorted list):
+#         for LO = the first place; LO before the last place; LO = LO + 1:
+#             for HI = the last place; HI != LO; HI = HI - 1:
+#                 if key(HI) - key(LO) + 2 <= R: break          # and so are all pairs further in
+#                 EVALUATE(tile at LO, tile at HI)
+#             if nothing was evaluated for this LO: return      # the same goes for every later LO
+#
+#     EVALUATE(P, Q):
+#         W = |x(P) - x(Q)| + 1; H = |y(P) - y(Q)| + 1
+#         if W + H <= R: return
+#         AREA = W * H
+#         if AREA > BEST: BEST = AREA; R = the largest number with R * R <= 4 * BEST
+#
+# R is found bit by bit from the top bit down: a bit stays when (R with that bit) squared is not above
+# 4 * BEST. That is 21 multiplications, but BEST changes only a few times.
+#
+# NUMBERS OF 32 BITS AND OF FOUR WORDS
+# A coordinate, S, D, W, H and R are two 16-bit words each, lower word first, and fit the 32-bit
+# registers whole: get32A v loads both words of v into A, and one sum or sub works on all 32 bits.
+# Loading the two words of one register needs the other register for the address. A variable's upper
+# word has the name of the variable with _H. D gets 2^31 added so that it is never below 0.
+# An area is wider still. BEST, AREA, FOUR and the numbers of the decimal digits are four 16-bit words
+# each, 0 the lowest, added word by word with a carry, and subtracted as X + (every bit of Y flipped)
+# + 1; the carry out of the top word then tells whether X >= Y.
+#
+# THE RESULT, when the CPU stops on the Breakpoint at END
+#   0x0100-0x0103  BEST as four 16-bit words, lowest first
+#   0x0110-0x011E  BEST as 15 decimal digits, one per word, most significant first
+#
+# THE INPUT (rule 1 of RULES.md), at 0x2000
+# Four words per tile, in the order of the input: X, then Y, each as two 16-bit words, lower word first
+# (97615 = 0x0001_7D4F is stored as 0x7D4F; 0x0001). After the last tile come two words 0xFFFF.
+# Built-in limits: 2 to 2,000 tiles; coordinates below 1,048,576; the answer below 10^15.
+#
+# THE IDIOMS (v is a variable's address, below 0x1000)
+#     getA v / getB v          A or B = the word at v, upper half 0
+#     putA v                   the word at v = A   (this uses up B)
+#     get32A v / get32B v      A or B = the 32-bit number at v and v + 1; loading one register uses up the other
+#     get32AB v w              A = the 32-bit number at v, B = the one at w (A waits on the stack while B is loaded)
+#     put32A v                 the 32-bit number at v and v + 1 = A   (this uses up B)
+#     getAat p / putAat p      the same as getA / putA for the word the pointer p points at
+#     getAoff p k              A = the word at the address (p + k); p is a variable holding an address
+#     copy v w                 w = v
+#     keepcarry v              v = the upper half of A: the carry of the sum just made
+#     if_eq L / if_neq L       compares A with B as they are now
+#     sub; if_carry L          after A - B: taken when A >= B
+# |a - b| is: sub; when that went below 0, flip every bit (neg) and add 1.
+# What each instruction does exactly is in findings/cpu-instructions.md.
+#
+# MEMORY MAP
+#   0x0100-0x017F  variables            0x2000-  the tiles (8 and the end mark end at 0x2021)
+#   0x1000-        the program          0x4000-  S and D: for the tile at address P, S is the two words at
+#   0x1800-        the subroutines               P + 0x2000 and D the two words at P + 0x2002
+#   0x1E00-        POWERS: 10^14 down to 1, four words each, then 0
+#   0x1E40-        BITS: 2^20 down to 1, two words each, then 0, 0;  GAPS at 0x1E80: the gaps of the sort, then 0
+#   0x6000-0x67FF  BY_S: the addresses of the tiles, sorted by S    0x6800-0x6FFF  BY_D: the same, sorted by D
+#   0xFF00         where the CPU starts
+
+# ---- The CPU's instructions as symbols (day 1's table without its _32 names, which the CPU ignores) ----
+symbol nop 0b0000_0000_0000_0000            # the word 0: stops the CPU (the same word as non)
+symbol ld  0b0010_0000_0000_0000            # load a register from memory (used through the load macro)
+symbol lia 0b0011_0000_0000_0000            # lia n: A = n (0 to 4095), upper half 0
+symbol lib 0b0100_0000_0000_0000            # lib n: B = n (0 to 4095), upper half 0
+symbol sto 0b0101_0000_0000_0000            # store a register to memory (used through the store macro)
+
+macro  load  { ld  | a? | (b? >> 6) }       # load X Y: X = the word at the address in Y
+macro  store { sto | a? | (b? >> 6) }       # store X Y: the word at the address in Y = X
+
+symbol sum    0b0110_0100_0000_0000         # A = A + B (32 bits), sets zero, carry, nega
+symbol sub    0b0110_0010_0000_0000         # A = A - B (32 bits), sets zero, carry, nega
+symbol shf    0b0110_0001_0000_0000         # shf | k: A = A shifted left by k (0 to 15)
+symbol and    0b0110_0000_1000_0000         # A = A and B
+symbol or     0b0110_0000_0100_0000         # A = A or B
+symbol xor    0b0110_0000_0010_0000         # A = A xor B
+symbol neg    0b0110_0000_0001_0000         # A = every bit of A flipped
+
+symbol psh 0b1010_0000_0000_0000            # psh X: push the 16 bits of X
+symbol pop 0b1011_0000_0000_0000            # pop X: pop 16 bits into X
+
+symbol jmp  0b1100_0000_0000_0000           # jmp; L: go to L.  jmp c; L: go to L when c holds
+symbol call 0b1110_0000_0000_0000           # call; L: run the subroutine at L
+symbol ret  0b1111_0000_0000_0000           # return from a subroutine
+
+# The registers, as load, store, psh and pop name them
+symbol rgAH 0b1000_0000_0000                # the upper 16 bits of A
+symbol rgA  0b0100_0000_0000                # the lower 16 bits of A
+symbol rgBH 0b0010_0000_0000                # the upper 16 bits of B
+symbol rgB  0b0001_0000_0000                # the lower 16 bits of B
+symbol rgSP 0b0000_1000_0000                # the program counter (leave alone)
+symbol rgSB 0b0000_0100_0000                # the stack pointer (leave alone)
+symbol non  0                               # stops the CPU (Breakpoint): the end of the program
+
+# The conditions of jmp
+symbol zero  0b1000_0000_0000               # the last sum or sub gave 0
+symbol carry 0b0100_0000_0000               # the last sum carried, or the last sub did not borrow (A >= B)
+symbol nega  0b0010_0000_0000               # the last sub went below 0 (A < B)
+symbol eq    0b0001_0000_0000               # A == B right now
+symbol neq   0b0000_1000_0000               # A != B right now
+
+# ---- Macros for the common operations (explained in the README). A macro cannot use another macro, so
+#      load and store are spelled out here. v: a variable, p: a variable holding an address, L: a label ----
+macro getA     { lia a?; ld | rgA | (rgA >> 6) }                                              # A = v
+macro getB     { lib a?; ld | rgB | (rgB >> 6) }                                              # B = v
+macro putA     { lib a?; sto | rgA | (rgB >> 6) }                                             # v = A (uses B)
+macro getAat   { lia a?; ld | rgA | (rgA >> 6); ld | rgA | (rgA >> 6) }                       # A = the word p points at
+macro putAat   { lib a?; ld | rgB | (rgB >> 6); sto | rgA | (rgB >> 6) }                      # the word p points at = A (uses B)
+macro inc      { lia a?; ld | rgA | (rgA >> 6); lib 1; sum; lib a?; sto | rgA | (rgB >> 6) }  # v = v + 1 (uses A and B)
+macro goto     { jmp; a? }                                                                    # go to L
+macro if_eq    { jmp eq; a? }                                                                 # go to L when A == B
+macro do       { call; a? }                                                                   # call the subroutine L
+macro if_carry { jmp carry; a? }                                                              # go to L after a sub when A >= B
+macro getAoff  { lia a?; ld | rgA | (rgA >> 6); lib b?; sum; ld | rgA | (rgA >> 6) }                # A = the word at (p + k) (uses B)
+macro copy     { lia a?; ld | rgA | (rgA >> 6); lib b?; sto | rgA | (rgB >> 6) }                      # w = v (uses A and B)
+macro get32A   { lib | (a? + 1); ld | rgAH | (rgB >> 6); lib a?; ld | rgA | (rgB >> 6) }                  # A = the 32 bits at v, v + 1 (uses B)
+macro get32B   { lia | (a? + 1); ld | rgBH | (rgA >> 6); lia a?; ld | rgB | (rgA >> 6) }                  # B = the 32 bits at v, v + 1 (uses A)
+macro get32AB  { lib | (a? + 1); ld | rgAH | (rgB >> 6); lib a?; ld | rgA | (rgB >> 6); psh rgAH; psh rgA; lia | (b? + 1); ld | rgBH | (rgA >> 6); lia b?; ld | rgB | (rgA >> 6); pop rgA; pop rgAH }
+# get32AB v w: A = the 32 bits at v, B = the 32 bits at w
+macro put32A   { lib a?; sto | rgA | (rgB >> 6); lib | (a? + 1); sto | rgAH | (rgB >> 6) }                # the 32 bits at v, v + 1 = A (uses B)
+
+macro keepcarry { psh rgAH; pop rgB; lia a?; sto | rgB | (rgA >> 6) }                                 # v = the upper half of A (uses A and B)
+macro if_neq   { jmp neq; a? }                                                                # go to L when A != B
+
+
+# ---- Variables (all below 0x1000, so lia/lib can address them). NAME_H is the upper word of the 32-bit NAME ----
+# The result, four words: the largest area so far
+pointer BEST0 0x0100 0
+pointer BEST1 0x0101 0
+pointer BEST2 0x0102 0
+pointer BEST3 0x0103 0
+# R: the largest number with R * R <= 4 * BEST. A pair with W + H <= R cannot beat BEST
+pointer R 0x0120 0
+pointer R_H 0x0121 0
+# P, Q: the addresses of two tiles. XP, YP, XQ, YQ: copies of their coordinates
+pointer P 0x0122 0x2000
+pointer Q 0x0123 0
+pointer XP 0x0124 0
+pointer XP_H 0x0125 0
+pointer YP 0x0126 0
+pointer YP_H 0x0127 0
+pointer XQ 0x0128 0
+pointer XQ_H 0x0129 0
+pointer YQ 0x012A 0
+pointer YQ_H 0x012B 0
+# SP, DP: where the next addresses go in BY_S and BY_D. S_END, D_END: the addresses after their last words
+pointer SP 0x012C 0x6000
+pointer DP 0x012D 0x6800
+pointer S_END 0x012E 0
+pointer D_END 0x012F 0
+# NEW: a number on its way into the table of S and D. ADR: an address worked out for a load or a store
+pointer NEW 0x0130 0
+pointer NEW_H 0x0131 0
+pointer ADR 0x0132 0
+# What SORT and SCAN work on: the list from LIST_BASE to LIST_END, and KEYOFF: what to add to a tile's address for its key
+pointer LIST_BASE 0x0133 0
+pointer LIST_END 0x0134 0
+pointer KEYOFF 0x0135 0
+# For SORT: GAPP the next gap in the table, GAP the gap, IP the word being placed, JP where it may go, GP = JP - GAP
+pointer GAPP 0x0136 0
+pointer GAP 0x0137 0
+pointer IP 0x0138 0
+pointer JP 0x0139 0
+pointer GP 0x013A 0
+# MOVED: the tile address being placed, KEY its key. OTHER: the tile address at GP, OTHER_KEY its key
+pointer MOVED 0x013B 0
+pointer KEY 0x013C 0
+pointer KEY_H 0x013D 0
+pointer OTHER 0x013E 0
+pointer OTHER_KEY 0x013F 0
+pointer OTHER_KEY_H 0x0140 0
+# For SCAN: LO and HI the two places, LAST the last place of the list, KEY_LO and KEY_HI the keys of the tiles there
+pointer LO 0x0141 0
+pointer HI 0x0142 0
+pointer LAST 0x0143 0
+pointer KEY_LO 0x0144 0
+pointer KEY_LO_H 0x0145 0
+pointer KEY_HI 0x0146 0
+pointer KEY_HI_H 0x0147 0
+# W, H: the width and height of a rectangle. SPAN: W + H, or the most it can be
+pointer W 0x0148 0
+pointer W_H 0x0149 0
+pointer H 0x014A 0
+pointer H_H 0x014B 0
+pointer SPAN 0x014C 0
+pointer SPAN_H 0x014D 0
+# For MULTIPLY: AREA = W * H, MBIT the power of two being looked at, DOUBLED4 = W * MBIT
+pointer AREA0 0x014E 0
+pointer AREA1 0x014F 0
+pointer AREA2 0x0150 0
+pointer AREA3 0x0151 0
+pointer MBIT 0x0152 0
+pointer MBIT_H 0x0153 0
+pointer DOUBLED40 0x0154 0
+pointer DOUBLED41 0x0155 0
+pointer DOUBLED42 0x0156 0
+pointer DOUBLED43 0x0157 0
+# For NEW_R: FOUR = 4 * BEST, BP the next power of two in the table, STEP that power, TRY_R = R + STEP
+pointer FOUR0 0x0158 0
+pointer FOUR1 0x0159 0
+pointer FOUR2 0x015A 0
+pointer FOUR3 0x015B 0
+pointer BP 0x015C 0
+pointer STEP 0x015D 0
+pointer STEP_H 0x015E 0
+pointer TRY_R 0x015F 0
+pointer TRY_R_H 0x0160 0
+# The carry from one word of an addition into the next
+pointer CARRY 0x0161 0
+# SUBTRACT works out DIFF = X - Y, and CARRY = 1 when X >= Y
+pointer X0 0x0162 0
+pointer X1 0x0163 0
+pointer X2 0x0164 0
+pointer X3 0x0165 0
+pointer Y0 0x0166 0
+pointer Y1 0x0167 0
+pointer Y2 0x0168 0
+pointer Y3 0x0169 0
+pointer DIFF0 0x016A 0
+pointer DIFF1 0x016B 0
+pointer DIFF2 0x016C 0
+pointer DIFF3 0x016D 0
+# For the decimal digits: how often the current power of ten fitted
+pointer DIGIT_VALUE 0x016E 0
+# Pointers: DIGIT the next digit to write, POW the next power of ten
+pointer DIGIT 0x016F 0x0110
+pointer POW 0x0170 0x1E00
+# Constants that do not fit an instruction's place for a number
+pointer BY_S 0x0171 0x6000
+pointer BY_D 0x0172 0x6800
+pointer TO_S 0x0173 0x2000
+pointer TO_D 0x0174 0x2002
+pointer BITS 0x0175 0x1E40
+pointer GAPS 0x0176 0x1E80
+pointer END_MARK 0x0177 0xFFFF
+pointer ALL_ONES 0x0178 0xFFFF
+pointer BIAS 0x0179 0
+pointer BIAS_H 0x017A 0x8000
+
+# ---- The CPU starts at 0xFF00 ----
+origin 0xFF00
+goto MAIN
+
+origin 0x1000
+@ MAIN
+# ==== go through the tiles once ====
+#     while the tile at P is not the end mark:              # P starts at the first tile
+#         S[P] = x(P) + y(P); D[P] = x(P) - y(P) + 2^31
+#         memory[SP] = P; SP = SP + 1                       # BY_S
+#         memory[DP] = P; DP = DP + 1                       # BY_D
+#         P = P + 4
+#     S_END = SP; D_END = DP
+@ INIT_NEXT
+	getAoff P 1; getB END_MARK                                   # A = the upper word of the tile's X, B = 0xFFFF
+	if_eq INIT_DONE                                              # the end mark: no more tiles
+	putA XP_H                                                    # XP = x(P); upper word (A still holds it)
+	getAat P; putA XP                                            # lower word
+	getAoff P 2; putA YP                                         # YP = y(P); lower word
+	getAoff P 3; putA YP_H                                       # upper word
+	get32AB XP YP; sum; put32A NEW                               # NEW = XP + YP
+	getA P; getB TO_S; sum; putA ADR                             # ADR = the address of the tile's S
+	getA NEW; putAat ADR; inc ADR                                # S[P] = NEW; lower word
+	getA NEW_H; putAat ADR; inc ADR                              # upper word; ADR is now the address of the tile's D
+	get32AB XP YP; sub; put32A NEW                               # NEW = XP - YP (it may have gone below 0)
+	get32AB NEW BIAS; sum; put32A NEW                            # NEW = NEW + 2^31, which never is
+	getA NEW; putAat ADR; inc ADR                                # D[P] = NEW; lower word
+	getA NEW_H; putAat ADR                                       # upper word
+	getA P; putAat SP; inc SP                                    # memory[SP] = P; SP = SP + 1
+	getA P; putAat DP; inc DP                                    # memory[DP] = P; DP = DP + 1
+	getA P; lib 4; sum; putA P                                   # P = P + 4, the next tile
+	goto INIT_NEXT
+@ INIT_DONE
+	copy SP S_END; copy DP D_END                                 # S_END, D_END = the addresses after the two lists
+
+# ==== sort both lists; try the two ends of each; scan both ====
+#     LIST = BY_S, keys S: SORT; EVALUATE(first, last)
+#     LIST = BY_D, keys D: SORT; EVALUATE(first, last)
+#     LIST = BY_D: SCAN
+#     LIST = BY_S, keys S: SCAN
+	copy BY_S LIST_BASE; copy S_END LIST_END; copy TO_S KEYOFF   # the list BY_S with the keys S
+	do SORT                                                      # sort it by S
+	do ENDS                                                      # EVALUATE its first and last tile
+	copy BY_D LIST_BASE; copy D_END LIST_END; copy TO_D KEYOFF   # the list BY_D with the keys D
+	do SORT                                                      # sort it by D
+	do ENDS                                                      # EVALUATE its first and last tile
+	do SCAN                                                      # the pairs far apart in D
+	copy BY_S LIST_BASE; copy S_END LIST_END; copy TO_S KEYOFF   # the list BY_S with the keys S
+	do SCAN                                                      # the pairs far apart in S
+
+# ==== write BEST as 15 decimal digits ====
+# A digit is how often a power of ten fits into what is left. Without division that is counting.
+# X is what is left of the total, Y the power of ten:
+#     X = BEST
+#     for Y in 10^14, 10^13, ..., 10, 1:                # the table ends at a number whose lowest word is 0
+#         DIGIT_VALUE = 0
+#         loop:
+#             SUBTRACT                                  # DIFF = X - Y, CARRY = 1 when X >= Y
+#             if CARRY == 0: break
+#             X = DIFF; DIGIT_VALUE = DIGIT_VALUE + 1
+#         memory[DIGIT] = DIGIT_VALUE; DIGIT = DIGIT + 1
+# (The lowest word of a power of ten up to 10^15 is never 0, so a 0 there can end the table.)
+@ WRITE_BEST
+	copy BEST0 X0                                               # X = BEST; word 0 (the lowest)
+	copy BEST1 X1                                               # word 1
+	copy BEST2 X2                                               # word 2
+	copy BEST3 X3                                               # word 3 (the top)
+@ NEXT_POWER
+	getAat POW                                                   # A = the lowest word of the next power of ten
+	lib 0                                                        # B = 0
+	if_eq END                                                    # a lowest word of 0 ends the table
+	putA Y0                                                      # Y = the power of ten; word 0 (the lowest)
+	getAoff POW 1; putA Y1                                       # word 1
+	getAoff POW 2; putA Y2                                       # word 2
+	getAoff POW 3; putA Y3                                       # word 3 (the top)
+	getA POW; lib 4; sum; putA POW                               # POW = POW + 4
+	lia 0; putA DIGIT_VALUE                                      # DIGIT_VALUE = 0
+@ FITS_AGAIN
+	do SUBTRACT                                                  # DIFF = X - Y, CARRY = 1 when X >= Y
+	getA CARRY; lib 0                                            # A = CARRY, B = 0
+	if_eq WRITE_DIGIT                                            # X < Y: the power does not fit again
+	copy DIFF0 X0                                                # X = DIFF; word 0 (the lowest)
+	copy DIFF1 X1                                                # word 1
+	copy DIFF2 X2                                                # word 2
+	copy DIFF3 X3                                                # word 3 (the top)
+	inc DIGIT_VALUE                                              # DIGIT_VALUE = DIGIT_VALUE + 1
+	goto FITS_AGAIN
+@ WRITE_DIGIT
+	getA DIGIT_VALUE; putAat DIGIT                               # memory[DIGIT] = DIGIT_VALUE
+	inc DIGIT                                                    # DIGIT = DIGIT + 1
+	goto NEXT_POWER
+
+# The word 0 stops the CPU on its Breakpoint.
+@ END
+	non
+
+# ---- Subroutines ----
+origin 0x1800
+# ENDS: EVALUATE the first and the last tile of the list.
+@ ENDS
+	getAat LIST_BASE; putA P                                     # P = the first tile of the list
+	getA LIST_END; lib 1; sub; load rgA rgA; putA Q              # Q = the last tile of the list
+	do EVALUATE
+	ret
+
+# SORT: sort the list by its keys, smallest first (a Shell sort).
+# An insertion sort moves each word left past the words with a larger key, one place at a time. A Shell
+# sort does the same with a GAP: first words 1093 places apart are put in order, then 364, 121, 40, 13,
+# 4, and at last 1, when nothing has far to go any more.
+#     for GAP in 1093, 364, 121, 40, 13, 4, 1:              # from the table GAPS, which ends in 0
+#         for IP = LIST_BASE + GAP; IP < LIST_END; IP = IP + 1:
+#             MOVED = memory[IP]; KEY = key(MOVED)
+#             JP = IP
+#             loop:
+#                 GP = JP - GAP
+#                 if GP < LIST_BASE: break
+#                 OTHER = memory[GP]
+#                 if key(OTHER) <= KEY: break
+#                 memory[JP] = OTHER; JP = GP               # OTHER moves GAP places to the right
+#             memory[JP] = MOVED
+@ SORT
+	copy GAPS GAPP                                               # GAPP = the first gap of the table
+@ SORT_NEXT_GAP
+	getAat GAPP; putA GAP                                        # GAP = the next gap of the table
+	lib 0                                                        # B = 0
+	if_eq SORT_DONE                                              # the 0 that ends the table
+	inc GAPP                                                     # GAPP = GAPP + 1
+	getA LIST_BASE; getB GAP; sum; putA IP                       # IP = LIST_BASE + GAP
+@ SORT_NEXT_WORD
+	getA IP; getB LIST_END; sub                                  # A = IP - LIST_END
+	if_carry SORT_NEXT_GAP                                       # IP >= LIST_END: this gap is done
+	getAat IP; putA MOVED                                        # MOVED = memory[IP]
+	getA MOVED; getB KEYOFF; sum; putA ADR                       # ADR = the address of the tile's key
+	getAat ADR; putA KEY                                         # KEY = the key; lower word
+	getAoff ADR 1; putA KEY_H                                    # upper word
+	copy IP JP                                                   # JP = IP
+@ SORT_LEFT
+	getA JP; getB GAP; sub; putA GP                              # GP = JP - GAP
+	getB LIST_BASE; sub                                          # A = GP - LIST_BASE
+	if_carry SORT_COMPARE                                        # GP >= LIST_BASE: there is a word GAP places to the left
+	goto SORT_PLACE
+@ SORT_COMPARE
+	getAat GP; putA OTHER                                        # OTHER = memory[GP]
+	getA OTHER; getB KEYOFF; sum; putA ADR                       # ADR = the address of the tile's key
+	getAat ADR; putA OTHER_KEY                                   # OTHER_KEY = the key; lower word
+	getAoff ADR 1; putA OTHER_KEY_H                              # upper word
+	get32AB KEY OTHER_KEY; sub                                   # A = KEY - key(OTHER)
+	if_carry SORT_PLACE                                          # key(OTHER) <= KEY: MOVED belongs at JP
+	getA OTHER; putAat JP                                        # memory[JP] = OTHER
+	copy GP JP                                                   # JP = GP
+	goto SORT_LEFT
+@ SORT_PLACE
+	getA MOVED; putAat JP                                        # memory[JP] = MOVED
+	inc IP                                                       # IP = IP + 1
+	goto SORT_NEXT_WORD
+@ SORT_DONE
+	ret
+
+# SCAN: EVALUATE every pair of the sorted list whose keys are more than R - 2 apart.
+#     LAST = LIST_END - 1
+#     for LO = LIST_BASE; LO < LAST; LO = LO + 1:
+#         for HI = LAST; HI != LO; HI = HI - 1:
+#             SPAN = key(HI) - key(LO) + 2                  # W + H of this pair is SPAN at most, in this list
+#             if SPAN <= R: break                           # the pairs further in are closer still
+#             EVALUATE(tile at LO, tile at HI)
+#         if HI == LAST: return                             # nothing for this LO: nothing for any later LO
+@ SCAN
+	getA LIST_END; lib 1; sub; putA LAST                         # LAST = LIST_END - 1
+	copy LIST_BASE LO                                            # LO = the first place
+@ SCAN_LO
+	getA LO; getB LAST; sub                                      # A = LO - LAST
+	if_carry SCAN_DONE                                           # LO >= LAST: no pair is left
+	getAat LO; putA P                                            # P = the tile at LO
+	getA P; getB KEYOFF; sum; putA ADR                           # ADR = the address of the tile's key
+	getAat ADR; putA KEY_LO                                      # KEY_LO = the key; lower word
+	getAoff ADR 1; putA KEY_LO_H                                 # upper word
+	copy LAST HI                                                 # HI = LAST
+@ SCAN_HI
+	getA HI; getB LO                                             # A = HI, B = LO
+	if_eq SCAN_NEXT_LO                                           # HI has come down to LO
+	getAat HI; putA Q                                            # Q = the tile at HI
+	getA Q; getB KEYOFF; sum; putA ADR                           # ADR = the address of the tile's key
+	getAat ADR; putA KEY_HI                                      # KEY_HI = the key; lower word
+	getAoff ADR 1; putA KEY_HI_H                                 # upper word
+	get32AB KEY_HI KEY_LO; sub; lib 2; sum; put32A SPAN          # SPAN = key(HI) - key(LO) + 2
+	get32AB R SPAN; sub                                          # A = R - SPAN
+	if_carry SCAN_STOP                                           # SPAN <= R: this pair and those further in cannot beat BEST
+	do EVALUATE
+	getA HI; lib 1; sub; putA HI                                 # HI = HI - 1
+	goto SCAN_HI
+@ SCAN_STOP
+	getA HI; getB LAST                                           # A = HI, B = LAST
+	if_eq SCAN_DONE                                              # not even the last tile was far enough from LO
+@ SCAN_NEXT_LO
+	inc LO                                                       # LO = LO + 1
+	goto SCAN_LO
+@ SCAN_DONE
+	ret
+
+# EVALUATE: the rectangle with the tiles at P and Q as corners; BEST and R are raised when it is larger.
+#     W = |x(P) - x(Q)| + 1; H = |y(P) - y(Q)| + 1
+#     if W + H <= R: return
+#     MULTIPLY                                              # AREA = W * H
+#     if AREA <= BEST: return
+#     BEST = AREA; NEW_R
+@ EVALUATE
+	getAat P; putA XP                                            # XP = x(P); lower word
+	getAoff P 1; putA XP_H                                       # upper word
+	getAoff P 2; putA YP                                         # YP = y(P); lower word
+	getAoff P 3; putA YP_H                                       # upper word
+	getAat Q; putA XQ                                            # XQ = x(Q); lower word
+	getAoff Q 1; putA XQ_H                                       # upper word
+	getAoff Q 2; putA YQ                                         # YQ = y(Q); lower word
+	getAoff Q 3; putA YQ_H                                       # upper word
+	get32AB XQ XP; sub                                           # A = XQ - XP
+	if_carry WIDTH_POSITIVE                                      # it did not go below 0
+	neg; lib 1; sum                                              # below 0: A = -A (flip every bit, add 1)
+@ WIDTH_POSITIVE
+	lib 1; sum; put32A W                                         # W = |XQ - XP| + 1
+	get32AB YQ YP; sub                                           # A = YQ - YP
+	if_carry HEIGHT_POSITIVE                                     # it did not go below 0
+	neg; lib 1; sum                                              # below 0: A = -A
+@ HEIGHT_POSITIVE
+	lib 1; sum; put32A H                                         # H = |YQ - YP| + 1
+	get32AB W H; sum; put32A SPAN                                # SPAN = W + H
+	get32AB R SPAN; sub                                          # A = R - SPAN
+	if_carry EVALUATE_DONE                                       # W + H <= R: the area cannot beat BEST
+	do MULTIPLY                                                  # AREA = W * H
+	copy BEST0 X0; copy BEST1 X1                                 # X = BEST; words 0 and 1
+	copy BEST2 X2; copy BEST3 X3                                 # words 2 and 3
+	copy AREA0 Y0; copy AREA1 Y1                                 # Y = AREA; words 0 and 1
+	copy AREA2 Y2; copy AREA3 Y3                                 # words 2 and 3
+	do SUBTRACT                                                  # CARRY = 1 when BEST >= AREA
+	getA CARRY; lib 0                                            # A = CARRY, B = 0
+	if_neq EVALUATE_DONE                                         # AREA is not larger than BEST
+	copy AREA0 BEST0; copy AREA1 BEST1                           # BEST = AREA; words 0 and 1
+	copy AREA2 BEST2; copy AREA3 BEST3                           # words 2 and 3
+	do NEW_R                                                     # R = the largest number with R * R <= 4 * BEST
+@ EVALUATE_DONE
+	ret
+
+# MULTIPLY: AREA = W * H. As on paper, in binary: H is a sum of powers of two, and W * H is the sum of
+# W * (those powers).
+#     AREA = 0; DOUBLED4 = W; MBIT = 1
+#     while MBIT <= H:
+#         if (H and MBIT) != 0: AREA = AREA + DOUBLED4
+#         DOUBLED4 = DOUBLED4 + DOUBLED4                    # DOUBLED4 is W * MBIT
+#         MBIT = MBIT * 2
+@ MULTIPLY
+	lia 0; putA AREA0; putA AREA1; putA AREA2; putA AREA3        # AREA = 0, all four words
+	putA DOUBLED42; putA DOUBLED43; putA MBIT_H                  # the upper words of DOUBLED4 and MBIT = 0 (A still holds 0)
+	copy W DOUBLED40; copy W_H DOUBLED41                         # DOUBLED4 = W
+	lia 1; putA MBIT                                             # MBIT = 1
+@ MULTIPLY_ROUND
+	get32AB H MBIT; sub                                          # A = H - MBIT
+	if_carry MULTIPLY_BIT                                        # H >= MBIT: there may be more to add
+	ret
+@ MULTIPLY_BIT
+	get32AB H MBIT; and                                          # A = H and MBIT
+	lib 0                                                        # B = 0
+	if_eq MULTIPLY_DOUBLE                                        # H does not have this power of two
+	lia 0; putA CARRY                                            # CARRY = 0
+	getA AREA0; getB DOUBLED40; sum; getB CARRY; sum; putA AREA0; keepcarry CARRY # AREA = AREA + DOUBLED4; word 0: AREA0 = AREA0 + DOUBLED40 + carry
+	getA AREA1; getB DOUBLED41; sum; getB CARRY; sum; putA AREA1; keepcarry CARRY # word 1
+	getA AREA2; getB DOUBLED42; sum; getB CARRY; sum; putA AREA2; keepcarry CARRY # word 2
+	getA AREA3; getB DOUBLED43; sum; getB CARRY; sum; putA AREA3 # word 3 (the top)
+@ MULTIPLY_DOUBLE
+	lia 0; putA CARRY                                            # CARRY = 0
+	getA DOUBLED40; getB DOUBLED40; sum; getB CARRY; sum; putA DOUBLED40; keepcarry CARRY # DOUBLED4 = DOUBLED4 + DOUBLED4; word 0: DOUBLED40 = DOUBLED40 + DOUBLED40 + carry
+	getA DOUBLED41; getB DOUBLED41; sum; getB CARRY; sum; putA DOUBLED41; keepcarry CARRY # word 1
+	getA DOUBLED42; getB DOUBLED42; sum; getB CARRY; sum; putA DOUBLED42; keepcarry CARRY # word 2
+	getA DOUBLED43; getB DOUBLED43; sum; getB CARRY; sum; putA DOUBLED43 # word 3 (the top)
+	get32A MBIT; shf | 1; put32A MBIT                            # MBIT = MBIT * 2
+	goto MULTIPLY_ROUND
+
+# NEW_R: R = the largest number with R * R <= 4 * BEST, built bit by bit from the top bit down.
+#     FOUR = BEST + BEST; FOUR = FOUR + FOUR
+#     R = 0
+#     for STEP in 2^20, 2^19, ..., 2, 1:                    # from the table BITS, which ends in 0
+#         TRY_R = R + STEP
+#         W = H = TRY_R; MULTIPLY                           # AREA = TRY_R * TRY_R
+#         if AREA <= FOUR: R = TRY_R
+# (W, H and AREA are free for this: EVALUATE is done with them.)
+@ NEW_R
+	lia 0; putA CARRY                                            # CARRY = 0
+	getA BEST0; getB BEST0; sum; getB CARRY; sum; putA FOUR0; keepcarry CARRY # FOUR = BEST + BEST; word 0: FOUR0 = BEST0 + BEST0 + carry
+	getA BEST1; getB BEST1; sum; getB CARRY; sum; putA FOUR1; keepcarry CARRY # word 1
+	getA BEST2; getB BEST2; sum; getB CARRY; sum; putA FOUR2; keepcarry CARRY # word 2
+	getA BEST3; getB BEST3; sum; getB CARRY; sum; putA FOUR3     # word 3 (the top)
+	lia 0; putA CARRY                                            # CARRY = 0
+	getA FOUR0; getB FOUR0; sum; getB CARRY; sum; putA FOUR0; keepcarry CARRY # FOUR = FOUR + FOUR; word 0: FOUR0 = FOUR0 + FOUR0 + carry
+	getA FOUR1; getB FOUR1; sum; getB CARRY; sum; putA FOUR1; keepcarry CARRY # word 1
+	getA FOUR2; getB FOUR2; sum; getB CARRY; sum; putA FOUR2; keepcarry CARRY # word 2
+	getA FOUR3; getB FOUR3; sum; getB CARRY; sum; putA FOUR3     # word 3 (the top)
+	lia 0; putA R; putA R_H                                      # R = 0
+	copy BITS BP                                                 # BP = the first power of two of the table
+@ NEW_R_STEP
+	getAat BP; putA STEP                                         # STEP = the next power of two; lower word
+	getAoff BP 1; putA STEP_H                                    # upper word
+	get32A STEP; lib 0                                           # A = STEP, B = 0
+	if_eq NEW_R_DONE                                             # the 0 that ends the table
+	getA BP; lib 2; sum; putA BP                                 # BP = BP + 2
+	get32AB R STEP; sum; put32A TRY_R                            # TRY_R = R + STEP
+	copy TRY_R W; copy TRY_R_H W_H                               # W = TRY_R
+	copy TRY_R H; copy TRY_R_H H_H                               # H = TRY_R
+	do MULTIPLY                                                  # AREA = TRY_R * TRY_R
+	copy FOUR0 X0; copy FOUR1 X1                                 # X = FOUR; words 0 and 1
+	copy FOUR2 X2; copy FOUR3 X3                                 # words 2 and 3
+	copy AREA0 Y0; copy AREA1 Y1                                 # Y = AREA; words 0 and 1
+	copy AREA2 Y2; copy AREA3 Y3                                 # words 2 and 3
+	do SUBTRACT                                                  # CARRY = 1 when FOUR >= AREA
+	getA CARRY; lib 0                                            # A = CARRY, B = 0
+	if_eq NEW_R_STEP                                             # TRY_R * TRY_R is above 4 * BEST: the bit does not stay
+	copy TRY_R R; copy TRY_R_H R_H                               # R = TRY_R
+	goto NEW_R_STEP
+@ NEW_R_DONE
+	ret
+
+# SUBTRACT: DIFF = X - Y, and CARRY = 1 when X >= Y (0 when X < Y; DIFF is then of no use).
+# Done as X + (Y with every bit flipped) + 1, word by word from the lowest:
+#     CARRY = 1                                         # the "+ 1"
+#     for k in 0, 1, 2, 3:
+#         A = (0xFFFF - Yk) + Xk + CARRY                # at most 0x1FFFF
+#         DIFFk = the lower half of A; CARRY = the upper half of A
+# X and Y are left as they were.
+@ SUBTRACT
+	lia 1; putA CARRY                                            # CARRY = 1
+	getA ALL_ONES; getB Y0; sub; getB X0; sum; getB CARRY; sum; putA DIFF0; keepcarry CARRY # word 0: DIFF0 = (0xFFFF - Y0) + X0 + carry
+	getA ALL_ONES; getB Y1; sub; getB X1; sum; getB CARRY; sum; putA DIFF1; keepcarry CARRY # word 1
+	getA ALL_ONES; getB Y2; sub; getB X2; sum; getB CARRY; sum; putA DIFF2; keepcarry CARRY # word 2
+	getA ALL_ONES; getB Y3; sub; getB X3; sum; getB CARRY; sum; putA DIFF3; keepcarry CARRY # word 3: its carry is 1 when X >= Y
+	ret
+
+# ---- Powers of ten for the decimal digits: 10^14 down to 1, four words each, lowest first; then 0 ----
+origin 0x1E00
+0x4000; 0x107A; 0x5AF3; 0x0000    # 100000000000000
+0xA000; 0x4E72; 0x0918; 0x0000    # 10000000000000
+0x1000; 0xD4A5; 0x00E8; 0x0000    # 1000000000000
+0xE800; 0x4876; 0x0017; 0x0000    # 100000000000
+0xE400; 0x540B; 0x0002; 0x0000    # 10000000000
+0xCA00; 0x3B9A; 0x0000; 0x0000    # 1000000000
+0xE100; 0x05F5; 0x0000; 0x0000    # 100000000
+0x9680; 0x0098; 0x0000; 0x0000    # 10000000
+0x4240; 0x000F; 0x0000; 0x0000    # 1000000
+0x86A0; 0x0001; 0x0000; 0x0000    # 100000
+0x2710; 0x0000; 0x0000; 0x0000    # 10000
+0x03E8; 0x0000; 0x0000; 0x0000    # 1000
+0x0064; 0x0000; 0x0000; 0x0000    # 100
+0x000A; 0x0000; 0x0000; 0x0000    # 10
+0x0001; 0x0000; 0x0000; 0x0000    # 1
+0
+
+
+# ---- Powers of two for NEW_R: 2^20 down to 1, two words each, lower first; then 0, 0 ----
+origin 0x1E40
+0x0000; 0x0010    # 2^20
+0x0000; 0x0008    # 2^19
+0x0000; 0x0004    # 2^18
+0x0000; 0x0002    # 2^17
+0x0000; 0x0001    # 2^16
+0x8000; 0x0000    # 2^15
+0x4000; 0x0000    # 2^14
+0x2000; 0x0000    # 2^13
+0x1000; 0x0000    # 2^12
+0x0800; 0x0000    # 2^11
+0x0400; 0x0000    # 2^10
+0x0200; 0x0000    # 2^9
+0x0100; 0x0000    # 2^8
+0x0080; 0x0000    # 2^7
+0x0040; 0x0000    # 2^6
+0x0020; 0x0000    # 2^5
+0x0010; 0x0000    # 2^4
+0x0008; 0x0000    # 2^3
+0x0004; 0x0000    # 2^2
+0x0002; 0x0000    # 2^1
+0x0001; 0x0000    # 2^0
+0; 0
+
+# ---- The gaps of the sort, then 0 ----
+origin 0x1E80
+1093; 364; 121; 40; 13; 4; 1; 0
+
+# ---- The red tiles: 8, then the end mark ----
+# Four words per tile: X, then Y, each lower word first.
+origin 0x2000
+0x0007; 0x0000; 0x0001; 0x0000    # 7,1
+0x000B; 0x0000; 0x0001; 0x0000    # 11,1
+0x000B; 0x0000; 0x0007; 0x0000    # 11,7
+0x0009; 0x0000; 0x0007; 0x0000    # 9,7
+0x0009; 0x0000; 0x0005; 0x0000    # 9,5
+0x0002; 0x0000; 0x0005; 0x0000    # 2,5
+0x0002; 0x0000; 0x0003; 0x0000    # 2,3
+0x0007; 0x0000; 0x0003; 0x0000    # 7,3
+0xFFFF; 0xFFFF    # the end mark

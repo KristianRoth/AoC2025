@@ -20,6 +20,7 @@ The CPU's board files for the Steam game Virtual Circuit Board (Update 1.0.1), a
 | `days/day7/cpu-32bit-autorun-aoc7p2.vcb` | The same for `days/day7/part2.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
 | `days/day8/cpu-32bit-autorun-aoc8p1.vcb` | The same for `days/day8/part1.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
 | `days/day8/cpu-32bit-autorun-aoc8p2.vcb` | The same for `days/day8/part2.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
+| `days/day9/cpu-32bit-autorun-aoc9p1.vcb` | The same for `days/day9/part1.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
 
 The boards differ only in those 24 latch pixels, in the assembly text they carry, and in the Persistent Memory range.
 
@@ -65,6 +66,8 @@ The rules the puzzles are solved under are in [`RULES.md`](RULES.md).
 | `days/day8/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 40) |
 | `days/day8/part2.vcbasm` | Advent of Code day 8, part 2. The header says where the answer is left |
 | `days/day8/part2-example.vcbasm` | The same program with the puzzle's example as input (answer 25272) |
+| `days/day9/part1.vcbasm` | Advent of Code day 9, part 1. The header says where the answer is left |
+| `days/day9/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 50) |
 
 ## How a solution is written
 
@@ -115,6 +118,8 @@ Measured in the `vcb` engine on `cpu-32bit-autorun-aoc1p1.vcb`, to the Breakpoin
 | Day 8 part 1 | 62186 | 1,110,321,360 | 7 s | 4,337,000 | 7,896 words |
 | Day 8 part 2, example | 25272 | 69,949,200 | 0.5 s | 273,000 | 2,290 words |
 | Day 8 part 2 | 8420405530 | 3,875,322,704 | 26 s | 15,138,000 | 8,170 words |
+| Day 9 part 1, example | 50 | 10,096,016 | 0.07 s | 39,000 | 1,514 words |
+| Day 9 part 1 | 4771508457 | 205,937,872 | 1.4 s | 804,000 | 3,466 words |
 
 "Instructions run" is the tick count divided by 256, the cost of most instructions:
 
@@ -211,6 +216,14 @@ How the day 8 programs got faster (ticks to the Breakpoint; every step was measu
 | **Now: all of them, cells in Y and Z** | **1,110,321,360** | **3,875,322,704** |
 
 That is 20 times faster than the first version for part 1 and 17 times for part 2. The two examples take about as long as before: with 20 boxes the cells cost as much as they save.
+
+Notes on the day 9 solution:
+
+- **Only pairs that can win are multiplied.** 496 tiles make 122,760 pairs, and an area is a multiplication of two 17-bit numbers by doubling and adding (about 1,600 instructions). A rectangle W wide and H high has area at most ((W + H) / 2)², so with R = the whole part of 2·√BEST a pair with W + H ≤ R cannot beat BEST.
+- **Two sorts find those pairs.** W + H − 2 is the larger of |S1 − S2| and |D1 − D2| with S = X + Y and D = X − Y. The tiles' addresses are sorted by S and by D (Shell sorts), and each list is walked inwards from both ends until the keys are no more than R − 2 apart. The two ends of each list are tried first, which sets BEST and R nearly right from the start.
+- **R needs a square root:** the largest R with R² ≤ 4·BEST is built bit by bit, 21 multiplications, each time BEST grows; that happens only a few times.
+- **The time is the two sorts.** 205 million ticks, about 40 seconds in the game at 5 million ticks a second.
+- **Size:** about 1,480 words of code, variables and tables; the rest of the 3,466 words is the tiles, four words each.
 
 ## Instruction set
 
