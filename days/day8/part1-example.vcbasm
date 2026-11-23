@@ -10,14 +10,19 @@
 # working out every distance is far too slow. But the 10 closest pairs are all short, and a pair
 # cannot be closer than its boxes are apart in X alone. So:
 #   1. SORT. A list of the boxes' addresses, ORDER, is sorted by X.
-#   2. COLLECT. Take a length T. For each box I look at the boxes Q after it in ORDER, and stop at the
-#      first Q that is T or more away in X: all later ones are too. Drop a pair that is T or more apart
-#      in Y or in Z. For the rest work out D2 = dx*dx + dy*dy + dz*dz, the distance squared, and keep
-#      the pairs with D2 < T*T in a list. If the list has fewer than 10 pairs, T was too small:
+#   2. COLLECT. Take a length T. Space is cut into cells of side T or more in Y and Z, and the boxes are
+#      sorted into them. Two boxes less than T apart are in the same cell or in neighbouring ones. So
+#      for each box I only the boxes Q of the 9 cells around it are looked at: those after I in ORDER,
+#      in the order of X, up to the first that is T or more away in X. Drop a pair that is T or more
+#      apart in Y or in Z. For the rest work out D2 = dx*dx + dy*dy + dz*dz, the distance squared, and
+#      keep the pairs with D2 < T*T in a list. If the list has fewer than 10 pairs, T was too small:
 #      make it larger (below) and start again. Otherwise the 10 closest pairs are all in the list: any pair not in
 #      it is at least T apart, and the list has 10 or more that are closer.
-#   3. SELECT. Find the largest number V for which fewer than 10 pairs of the list have D2 < V, bit by
-#      bit from the top bit down. Then the pairs with D2 <= V are the 10 closest.
+#   3. SELECT. Find the largest number V for which fewer than 10 pairs have D2 < V, bit by bit from
+#      the top bit down. Then the pairs with D2 <= V are the 10 closest. The list shrinks on the way:
+#      when a trial value was too small, the pairs below it are among the 10 closest for certain (they
+#      are connected at once and dropped); when it was large enough, the pairs from it up are not
+#      (dropped).
 #   4. CONNECT. The order of connecting does not matter for what the circuits are in the end. Each box
 #      has a PARENT, at first itself. Following parents from a box ends at a box that is its own parent:
 #      the ROOT of its circuit. Connecting two boxes: find both roots; if they differ, make one the
@@ -38,20 +43,21 @@
 #     T = 1024
 #     loop:                                                         # COLLECT
 #         empty the list
+#         sort the boxes into cells of side T or more in Y and Z
 #         for every I in ORDER:
-#             for every Q after I in ORDER:
-#                 if x(Q) - x(I) >= T: break                        # sorted: the rest is farther still
+#             for every Q after I in ORDER that is in one of the 9 cells around I's, cell by cell:
+#                 if x(Q) - x(I) >= T: break                        # the rest of the cell is farther still
 #                 if |y(I) - y(Q)| >= T or |z(I) - z(Q)| >= T: continue
 #                 D2 = dx*dx + dy*dy + dz*dz
 #                 if D2 < T*T: append (I, Q, D2) to the list
 #         if the list has K or more pairs: break
 #         T = T + T, and again while (pairs in the list) * 8 per doubling stays below K
-#     V = 0                                                         # SELECT
+#     V = 0                                                         # SELECT and CONNECT
 #     for STEP in the powers of two below T*T, largest first:
-#         if (number of pairs in the list with D2 < V + STEP) < K: V = V + STEP
-#     for every pair (I, Q, D2) of the list with D2 <= V:           # CONNECT
-#         RA = ROOT(I); RB = ROOT(Q)
-#         if RA != RB: PARENT[RB] = RA
+#         if (number of pairs with D2 < V + STEP) >= K: drop the pairs with D2 >= V + STEP from the list
+#         else: V = V + STEP; connect the pairs of the list with D2 < V and drop them
+#     connect the pairs left in the list with D2 <= V
+#     (connect I, Q:  RA = ROOT(I); RB = ROOT(Q); if RA != RB: PARENT[RB] = RA)
 #     for every box P: SIZE[ROOT(P)] = SIZE[ROOT(P)] + 1            # COUNT
 #     M1, M2, M3 = the three largest SIZE
 #     ANSWER = M1 * M2 * M3
@@ -72,9 +78,10 @@
 # Six words per box: X, Y, Z, each as two 16-bit words, lower word first (99967 = 0x0001_867F is stored
 # as 0x867F; 0x0001). After the last box come two words 0xFFFF. The number of connections to make is
 # the word K below (1000 for the puzzle, 10 for its example).
-# Built-in limits: at most 1,023 boxes; coordinates below 2^31; the K-th closest pair is closer than
+# Built-in limits: at most 1,023 boxes; X below 2^31, Y and Z below 1,966,080 (30 cells of 65,536);
+# the K-th closest pair is closer than
 # 32,768 (T may not grow beyond that: the squares must fit 32 bits); COLLECT's last list has at most
-# 8,960 pairs; no two pairs at exactly the distance of the K-th closest (the puzzle would not say which
+# 8,704 pairs; no two pairs at exactly the distance of the K-th closest (the puzzle would not say which
 # to take; the program would connect both); there are at least K pairs.
 #
 # THE IDIOMS (v is a variable's address, below 0x1000)
@@ -94,15 +101,19 @@
 # What each instruction does exactly is in findings/cpu-instructions.md.
 #
 # MEMORY MAP
-#   0x0100-0x017F  variables
+#   0x0100-0x01BF  variables
 #   0x1000-        the program          0x2000-  the boxes (20 and the end mark end at 0x2079)
 #   0x1800-        the subroutines      0x3800-  PARENT and SIZE: for the box at address P, PARENT is the word
 #                                                at P + 0x1800 and SIZE the word at P + 0x1801; all 0 at the start
 #   0x1A00-0x1DFF  ORDER: the addresses of the boxes, sorted by X
 #   0x1E00-        POWERS: 10^9 down to 1, two words each, then 0; BITS at 0x1E40: 2^29 down to 1, then 0, 0;
 #                  GAPS at 0x1E80: the gaps of the sort, then 0
+#                  NEIGH at 0x1E90: the cells around a cell; 0x1F00: the row of shifts of SHIFT_LEFT
+#   0x0200-0x09FF  CUR (0x0200 + c) and LIM (0x0600 + c): where the boxes of cell c begin and end in CELLBOX
+#   0x0A00-0x0DFF  CELLBOX: the places in ORDER of all boxes, cell after cell
 #   0x5000-0x537F  SQ: the squares of 0 to 383; lower words at 0x5000 + n, upper words at 0x5200 + n
-#   0x5400-0xDFFF  the list: four words per pair (address of I, address of Q, D2 lower word, D2 upper word)
+#   0x5400-0x57FF  BOXCELL: for the box at place OP of ORDER, the word at OP + 0x3A00 is its CORNER
+#   0x5800-0xDFFF  the list: four words per pair (address of I, address of Q, D2 lower word, D2 upper word)
 #   0xFF00         where the CPU starts
 
 # ---- The CPU's instructions as symbols (day 1's table without its _32 names, which the CPU ignores) ----
@@ -216,71 +227,116 @@ pointer YI 0x013E 0
 pointer YI_H 0x013F 0
 pointer ZI 0x0140 0
 pointer ZI_H 0x0141 0
+# BOUND = XI + T: a box whose X is not below it is T or more from I in X
+pointer BOUND 0x0142 0
+pointer BOUND_H 0x0143 0
 # CJ: a copy of one coordinate of Q. DX, DY, DZ: how far apart the pair is in each direction (below T)
-pointer CJ 0x0142 0
-pointer CJ_H 0x0143 0
-pointer DX 0x0144 0
-pointer DY 0x0145 0
-pointer DZ 0x0146 0
+pointer CJ 0x0144 0
+pointer CJ_H 0x0145 0
+pointer DX 0x0146 0
+pointer DY 0x0147 0
+pointer DZ 0x0148 0
 # D2: the distance of a pair, squared
-pointer D2 0x0147 0
-pointer D2_H 0x0148 0
+pointer D2 0x0149 0
+pointer D2_H 0x014A 0
 # For ADD_SQUARE: S the number to square, H = S / 256, L = S mod 256, SH = H * H, SL = L * L, HL = H + L
-pointer S 0x0149 0
-pointer H 0x014A 0
-pointer L 0x014B 0
-pointer SH 0x014C 0
-pointer SL 0x014D 0
-pointer HL 0x014E 0
+pointer S 0x014B 0
+pointer H 0x014C 0
+pointer L 0x014D 0
+pointer SH 0x014E 0
+pointer SL 0x014F 0
+pointer HL 0x0150 0
 # LIST_END: the address after the last pair of the list. E: the address of the pair of the list being looked at
-pointer LIST_END 0x014F 0
-pointer E 0x0150 0
+pointer LIST_END 0x0151 0
+pointer E 0x0152 0
 # GUESS: the words in the list after a round of COLLECT, then the guess for a larger T
-pointer GUESS 0x0151 0
+pointer GUESS 0x0153 0
 # For SELECT: V the number being built, STEP the power of two being tried, LIMIT = V + STEP
-pointer V 0x0152 0
-pointer V_H 0x0153 0
-pointer STEP 0x0154 0
-pointer STEP_H 0x0155 0
-pointer LIMIT 0x0156 0
-pointer LIMIT_H 0x0157 0
+pointer V 0x0154 0
+pointer V_H 0x0155 0
+pointer STEP 0x0156 0
+pointer STEP_H 0x0157 0
+pointer LIMIT 0x0158 0
+pointer LIMIT_H 0x0159 0
 # BP: the first power of two SELECT tries: the largest below TSQ (2^19 for T = 1024)
-pointer BP 0x0158 0x1E54
+pointer BP 0x015A 0x1E54
 # F: FIND starts at the box at F and leaves the root of its circuit in F. RA: the root of the pair's first box
-pointer F 0x0159 0
-pointer RA 0x015A 0
+pointer F 0x015B 0
+pointer RA 0x015C 0
+# For FIND: UP the parent of F, UP2 the parent of UP
+pointer UP 0x015D 0
+pointer UP2 0x015E 0
 # ADR: an address worked out for a load or a store
-pointer ADR 0x015B 0
+pointer ADR 0x015F 0
+# CELL: the side of a cell, a power of two not below T. NSHIFT: a coordinate shifted left NSHIFT times has its cell number in the upper half
+pointer CELL 0x0160 1024
+pointer CELL_H 0x0161 0
+pointer NSHIFT 0x0162 6
+# MAXC: the largest Y or Z of all boxes. SPAN: the largest coordinate the cells can take. ENTRY: where SHIFT_LEFT enters its row of shifts
+pointer MAXC 0x0163 0
+pointer MAXC_H 0x0164 0
+pointer SPAN 0x0165 0
+pointer SPAN_H 0x0166 0
+pointer ENTRY 0x0167 0
+# CY, CZ: cell numbers of a box. CORNER: the number of the cell one below it in each direction
+pointer CY 0x0168 0
+pointer CZ 0x0169 0
+pointer CORNER 0x016A 0
+# For making the cells: P1, P2 walk along LIM and CUR, N a count, NEXT_FREE the next free word of CELLBOX, SLOT where a box goes
+pointer P1 0x016B 0
+pointer P2 0x016C 0
+pointer N 0x016D 0
+pointer NEXT_FREE 0x016E 0
+pointer SLOT 0x016F 0
+# For the pairs: NP the next neighbour in the table, CELLN its cell, CURP the address of its CUR word, LIMV its LIM, CP the place in CELLBOX
+pointer NP 0x0170 0
+pointer CELLN 0x0171 0
+pointer CURP 0x0172 0
+pointer LIMV 0x0173 0
+pointer CP 0x0174 0
+# Constants for the cells
+pointer CUR_BASE 0x0175 0x0200
+pointer LIM_BASE 0x0176 0x0600
+pointer LIM_END 0x0177 0x0A00
+pointer CELLBOX 0x0178 0x0A00
+pointer LIM_OWN 0x0179 0x0621
+pointer TO_BOXCELL 0x017A 0x3A00
+pointer LADDER_END 0x017B 0x1F10
+pointer NEIGH 0x017C 0x1E90
 # COUNT: the pairs SELECT found below LIMIT
-pointer COUNT 0x015C 0
+pointer COUNT 0x017D 0
 # M1 >= M2 >= M3: the three largest sizes. SIZE: the size being looked at
-pointer M1 0x015D 0
-pointer M2 0x015E 0
-pointer M3 0x015F 0
-pointer SIZE 0x0160 0
+pointer M1 0x017E 0
+pointer M2 0x017F 0
+pointer M3 0x0180 0
+pointer SIZE 0x0181 0
 # For the products: PRODUCT = M1 * M2, TIMES counts the additions down
-pointer PRODUCT 0x0161 0
-pointer PRODUCT_H 0x0162 0
-pointer TIMES 0x0163 0
+pointer PRODUCT 0x0182 0
+pointer PRODUCT_H 0x0183 0
+pointer TIMES 0x0184 0
 # For the decimal digits: what is left of the answer, the current power of ten, how often it fitted
-pointer REST 0x0164 0
-pointer REST_H 0x0165 0
-pointer POWER 0x0166 0
-pointer POWER_H 0x0167 0
-pointer DIGIT_VALUE 0x0168 0
+pointer REST 0x0185 0
+pointer REST_H 0x0186 0
+pointer POWER 0x0187 0
+pointer POWER_H 0x0188 0
+pointer DIGIT_VALUE 0x0189 0
 # Pointers: DIGIT the next digit to write, POW the next power of ten
-pointer DIGIT 0x0169 0x0110
-pointer POW 0x016A 0x1E00
+pointer DIGIT 0x018A 0x0110
+pointer POW 0x018B 0x1E00
 # Constants that do not fit an instruction's place for a number
-pointer POINTS 0x016B 0x2000
-pointer ORDER 0x016C 0x1A00
-pointer LIST 0x016D 0x5400
-pointer SQLO 0x016E 0x5000
-pointer SQHI 0x016F 0x5200
-pointer SQ_END 0x0170 0x5180
-pointer TO_PARENT 0x0171 0x1800
-pointer END_MARK 0x0172 0xFFFF
-pointer TO_SIZE 0x0173 0x1801
+pointer POINTS 0x018C 0x2000
+pointer ORDER 0x018D 0x1A00
+pointer LIST 0x018E 0x5800
+pointer SQLO 0x018F 0x5000
+pointer SQHI 0x0190 0x5200
+pointer SQ_END 0x0191 0x5180
+pointer TO_PARENT 0x0192 0x1800
+pointer END_MARK 0x0193 0xFFFF
+pointer TO_SIZE 0x0194 0x1801
+# BASE_COUNT: the pairs known to be below V, connected and dropped from the list. KEEP_BELOW, W: for SHRINK
+pointer BASE_COUNT 0x0195 0
+pointer KEEP_BELOW 0x0196 0
+pointer W 0x0197 0
 
 # ---- The CPU starts at 0xFF00 ----
 origin 0xFF00
@@ -302,6 +358,18 @@ origin 0x1000
 	inc OP                                                       # OP = OP + 1
 	getA P; getB TO_PARENT; sum                                  # A = P + 0x1800, the address of the box's PARENT
 	getB P; store rgB rgA                                        # PARENT[P] = P
+	getAoff P 2; putA CJ                                         # CJ = the box's Y; lower word
+	getAoff P 3; putA CJ_H                                       # upper word
+	get32AB MAXC CJ; sub                                         # A = MAXC - CJ
+	if_carry INIT_Y_DONE                                         # not larger than the largest so far
+	copy CJ MAXC; copy CJ_H MAXC_H                               # MAXC = CJ
+@ INIT_Y_DONE
+	getAoff P 4; putA CJ                                         # CJ = the box's Z; lower word
+	getAoff P 5; putA CJ_H                                       # upper word
+	get32AB MAXC CJ; sub                                         # A = MAXC - CJ
+	if_carry INIT_Z_DONE                                         # not larger than the largest so far
+	copy CJ MAXC; copy CJ_H MAXC_H                               # MAXC = CJ
+@ INIT_Z_DONE
 	getA P; lib 6; sum; putA P                                   # P = P + 6, the next box
 	goto INIT_NEXT
 @ INIT_DONE
@@ -374,14 +442,97 @@ origin 0x1000
 @ SORTED
 
 # ==== COLLECT: the pairs closer than T ====
+# Space is cut into cells of side CELL in Y and Z, CELL not below T. Two boxes less than T apart are in the
+# same cell or in neighbouring ones, so a box is only paired with the boxes of the 9 cells around it.
+#     make the cells (below)
 #     LIST_END = LIST                                       # the list is empty
 #     for IP = ORDER; IP != OEND; IP = IP + 1:              # I: every box, from the smallest X upwards
-#         I = memory[IP]; XI, YI, ZI = the position of I
-#         for QP = IP + 1; QP != OEND; QP = QP + 1:         # Q: the boxes after I in ORDER
-#             Q = memory[QP]
-#             (the pair I, Q: below)
+#         I = memory[IP]; XI, YI, ZI = the position of I; BOUND = XI + T
+#         for each of the 9 cells around I's:
+#             skip the boxes of the cell that are not after I in ORDER      # for good: CUR of the cell moves on
+#             for the others, Q, in the order of X:
+#                 (the pair I, Q: below)
 #     if LIST_END - LIST < TARGET: GROW (below); start again
 @ COLLECT
+
+# ---- the side of a cell ----
+# CELL must be at least T, and 30 cells must reach past the largest coordinate MAXC.
+#     while CELL < T or MAXC >= 30 * CELL: CELL = CELL * 2; NSHIFT = NSHIFT - 1
+#     ENTRY = LADDER_END - NSHIFT
+@ FIT_CELL
+	get32A CELL; getB T; sub                                     # A = CELL - T
+	if_carry FIT_SPAN                                            # CELL >= T
+@ GROW_CELL
+	get32A CELL; shf | 1; put32A CELL                            # CELL = CELL * 2
+	getA NSHIFT; lib 1; sub; putA NSHIFT                         # NSHIFT = NSHIFT - 1
+	goto FIT_CELL
+@ FIT_SPAN
+	get32A CELL; shf | 1; psh rgAH; psh rgA                      # CELL * 2 goes on the stack
+	get32A CELL; shf | 5; pop rgB; pop rgBH; sub; put32A SPAN    # SPAN = CELL * 32 - CELL * 2 = 30 * CELL
+	get32AB MAXC SPAN; sub                                       # A = MAXC - SPAN
+	if_carry GROW_CELL                                           # MAXC >= SPAN: the cells are too small to cover all boxes
+	getA LADDER_END; getB NSHIFT; sub; putA ENTRY                # ENTRY = LADDER_END - NSHIFT
+
+# ---- sort the boxes into the cells ----
+# A box's cell number in one direction is its coordinate / CELL, plus 1 (so cell 0 stays empty and every
+# cell has neighbours). The number of a cell is 32 * (its number in Y) + (its number in Z). CORNER is the number of the cell
+# one lower in each direction: the cells around a box are CORNER + 0, 1, 2, 32, 33, 34, 64, 65, 66, its own CORNER + 33.
+# CELLBOX gets the places in ORDER of all boxes, cell after cell, and within a cell in the order of ORDER.
+# For a cell c, CUR[c] is where its boxes begin in CELLBOX and LIM[c] where they end.
+#     for every cell c: LIM[c] = 0                          # LIM counts first
+#     for every place OP of ORDER: BOXCELL[OP] = CORNER of its box; LIM[CORNER + 33] += 1
+#     NEXT_FREE = CELLBOX
+#     for every cell c: N = LIM[c]; CUR[c] = LIM[c] = NEXT_FREE; NEXT_FREE = NEXT_FREE + N
+#     for every place OP of ORDER: c = BOXCELL[OP] + 33; memory[LIM[c]] = OP; LIM[c] += 1
+	copy LIM_BASE P1                                             # P1 = the first word of LIM
+@ CELLS_CLEAR
+	lia 0; putAat P1                                             # memory[P1] = 0
+	inc P1                                                       # P1 = P1 + 1
+	getB LIM_END                                                 # B = the address after LIM (A still holds P1)
+	if_neq CELLS_CLEAR
+	copy ORDER OP                                                # OP = the first place of ORDER
+@ CELLS_COUNT
+	getA OP; getB OEND                                           # A = OP, B = OEND
+	if_eq CELLS_COUNTED                                          # every box has its cell
+	getAat OP; putA ADR                                          # ADR = the address of the box
+	getAoff ADR 2; putA CJ                                       # CJ = the box's Y; lower word
+	getAoff ADR 3; putA CJ_H                                     # upper word
+	get32A CJ; do SHIFT_LEFT                                     # A = Y shifted left NSHIFT times
+	lib CY; store rgAH rgB                                       # CY = the upper half: Y / CELL
+	getAoff ADR 4; putA CJ                                       # CJ = the box's Z; lower word
+	getAoff ADR 5; putA CJ_H                                     # upper word
+	get32A CJ; do SHIFT_LEFT                                     # A = Z shifted left NSHIFT times
+	lib CZ; store rgAH rgB                                       # CZ = the upper half: Z / CELL
+	getA CY; shf | 5; getB CZ; sum; putA CORNER                  # CORNER = CY * 32 + CZ
+	getA OP; getB TO_BOXCELL; sum                                # A = the address of BOXCELL[OP]
+	getB CORNER; store rgB rgA                                   # BOXCELL[OP] = CORNER
+	getA CORNER; getB LIM_OWN; sum; putA ADR                     # ADR = the address of LIM of the box's own cell
+	getAat ADR; lib 1; sum; putAat ADR                           # that count + 1
+	inc OP                                                       # OP = OP + 1
+	goto CELLS_COUNT
+@ CELLS_COUNTED
+	copy CELLBOX NEXT_FREE                                       # NEXT_FREE = the first word of CELLBOX
+	copy LIM_BASE P1; copy CUR_BASE P2                           # P1, P2 = the first words of LIM and CUR
+@ CELLS_STARTS
+	getAat P1; putA N                                            # N = the cell's count
+	getA NEXT_FREE; putAat P1; putAat P2                         # LIM and CUR of the cell = NEXT_FREE
+	getB N; sum; putA NEXT_FREE                                  # NEXT_FREE = NEXT_FREE + N
+	inc P2                                                       # P2 = P2 + 1
+	inc P1                                                       # P1 = P1 + 1
+	getB LIM_END                                                 # B = the address after LIM (A still holds P1)
+	if_neq CELLS_STARTS
+	copy ORDER OP                                                # OP = the first place of ORDER
+@ CELLS_PLACE
+	getA OP; getB OEND                                           # A = OP, B = OEND
+	if_eq CELLS_DONE                                             # every box is in its cell
+	getA OP; getB TO_BOXCELL; sum; load rgA rgA                  # A = BOXCELL[OP]
+	getB LIM_OWN; sum; putA ADR                                  # ADR = the address of LIM of the box's own cell
+	getAat ADR; putA SLOT                                        # SLOT = the cell's next free word in CELLBOX
+	getA OP; putAat SLOT                                         # memory[SLOT] = OP
+	getA SLOT; lib 1; sum; putAat ADR                            # the cell's LIM = SLOT + 1
+	inc OP                                                       # OP = OP + 1
+	goto CELLS_PLACE
+@ CELLS_DONE
 	copy LIST LIST_END                                           # the list is empty
 	copy ORDER IP                                                # IP = the first place of ORDER
 @ NEXT_I
@@ -394,26 +545,46 @@ origin 0x1000
 	getAoff I 3; putA YI_H                                       # upper word
 	getAoff I 4; putA ZI                                         # ZI = the Z of I; lower word
 	getAoff I 5; putA ZI_H                                       # upper word
-	getA IP; lib 1; sum; putA QP                                 # QP = IP + 1
+	get32A XI; getB T; sum; put32A BOUND                         # BOUND = XI + T: a box with X at or above it is too far
+	getA IP; getB TO_BOXCELL; sum; load rgA rgA; putA CORNER     # CORNER = BOXCELL[IP]
+	copy NEIGH NP                                                # NP = the first neighbour of the table
+
+# ---- one cell around I ----
+#     CELLN = CORNER + memory[NP]; NP = NP + 1              # 0xFFFF ends the table
+#     CP = CUR[CELLN]
+#     while CP != LIM[CELLN] and memory[CP] <= IP: CP = CP + 1      # boxes not after I in ORDER
+#     CUR[CELLN] = CP                                       # no later I needs them either
+#     for CP; CP != LIM[CELLN]; CP = CP + 1: QP = memory[CP]; the pair I, Q
+@ NEXT_CELL
+	getAat NP; getB END_MARK                                     # A = the next neighbour of the table, B = 0xFFFF
+	if_eq END_OF_I                                               # all cells around I are done
+	getB CORNER; sum; putA CELLN                                 # CELLN = CORNER + that
+	inc NP                                                       # NP = NP + 1
+	getA CELLN; getB CUR_BASE; sum; putA CURP                    # CURP = the address of the cell's CUR
+	getA CELLN; getB LIM_BASE; sum; load rgA rgA; putA LIMV      # LIMV = the cell's LIM
+	getAat CURP; putA CP                                         # CP = the cell's CUR
+@ SKIP_EARLIER
+	getA CP; getB LIMV                                           # A = CP, B = LIMV
+	if_eq CELL_USED_UP                                           # no box of this cell is after I
+	getAat CP; putA QP                                           # QP = memory[CP], a place in ORDER
+	getA IP; getB QP; sub                                        # A = IP - QP
+	if_carry SKIP_ONE                                            # QP <= IP: this box is I or before it
+	getA CP; putAat CURP                                         # the cell's CUR = CP
 
 # ---- one pair ----
-#     if x(Q) - XI >= T: goto END_OF_I          # ORDER is sorted by X: every later Q is as far or farther
+#     if x(Q) >= BOUND: goto NEXT_CELL          # the cell's boxes are in the order of X: the rest is farther
 #     if |y(Q) - YI| >= T: goto NEXT_Q
 #     if |z(Q) - ZI| >= T: goto NEXT_Q
 #     D2 = DX*DX + DY*DY + DZ*DZ
 #     if D2 >= TSQ: goto NEXT_Q
 #     append I, Q, D2 to the list
 @ NEXT_PAIR
-	getA QP; getB OEND                                           # A = QP, B = OEND
-	if_eq END_OF_I                                               # no box is left to pair I with
 	getAat QP; putA Q                                            # Q = memory[QP]
-	getAoff Q 1; shf | 8; shf | 8                                # A = the upper word of Q's X, moved into the upper half of A
-	getB Q; load rgA rgB                                         # the lower half of A = the lower word: A = Q's X
-	psh rgAH; psh rgA; get32B XI; pop rgA; pop rgAH              # B = I's X (loading B uses A, so A waits on the stack)
-	sub                                                          # A = Q's X - I's X, which is not below 0
-	getB T; sub                                                  # A = that - T
-	if_carry END_OF_I                                            # T or more apart in X, and so is every box after Q
-	sum; putA DX                                                 # DX = the distance in X (A + T again; B still holds T)
+	getAoff Q 1; getB BOUND_H                                    # A = the upper word of Q's X, B = the upper word of BOUND
+	if_neq X_UPPER_DIFFERS                                       # the upper words decide (below, out of the way)
+	getAat Q; getB BOUND; sub                                    # A = the lower word of Q's X - the lower word of BOUND
+	if_carry NEXT_CELL                                           # Q's X >= BOUND: T or more apart in X, and so is the rest of the cell
+@ X_NEAR
 	getAoff Q 2; putA CJ                                         # CJ = Q's Y; lower word
 	getAoff Q 3; putA CJ_H                                       # upper word
 	get32AB CJ YI                                                # A = Q's Y, B = I's Y
@@ -434,6 +605,11 @@ origin 0x1000
 	getB T; sub                                                  # A = the distance in this direction - T
 	if_carry NEXT_Q                                              # T or more apart: this pair is not among the closest
 	sum; putA DZ                                                 # DZ = the distance in this direction (A + T again; B still holds T)
+	getAoff Q 1; shf | 8; shf | 8                                # A = the upper word of Q's X, moved into the upper half of A
+	getB Q; load rgA rgB                                         # the lower half of A = the lower word: A = Q's X
+	psh rgAH; psh rgA; get32B XI; pop rgA; pop rgAH              # B = I's X (loading B uses A, so A waits on the stack)
+	sub                                                          # A = Q's X - I's X, which is not below 0
+	putA DX                                                      # DX = the distance in X: only now, for the few pairs that got here
 	lia 0; putA D2; putA D2_H                                    # D2 = 0
 	copy DX S; do ADD_SQUARE                                     # D2 = D2 + DX * DX
 	copy DY S; do ADD_SQUARE                                     # D2 = D2 + DY * DY
@@ -445,8 +621,21 @@ origin 0x1000
 	getA D2; putAat LIST_END; inc LIST_END                       # the lower word of D2
 	getA D2_H; putAat LIST_END; inc LIST_END                     # the upper word of D2
 @ NEXT_Q
-	inc QP                                                       # QP = QP + 1
+	inc CP                                                       # CP = CP + 1
+	getB LIMV                                                    # B = LIMV (A still holds CP)
+	if_eq NEXT_CELL                                              # the end of the cell
+	getAat CP; putA QP                                           # QP = memory[CP]
 	goto NEXT_PAIR
+@ SKIP_ONE
+	inc CP                                                       # CP = CP + 1
+	goto SKIP_EARLIER
+@ CELL_USED_UP
+	getA CP; putAat CURP                                         # the cell's CUR = CP, its end
+	goto NEXT_CELL
+@ X_UPPER_DIFFERS
+	sub                                                          # A = the upper word of Q's X - the upper word of BOUND (they differ)
+	if_carry NEXT_CELL                                           # Q's X >= BOUND
+	goto X_NEAR                                                  # Q's X < BOUND
 @ END_OF_I
 	inc IP                                                       # IP = IP + 1
 	goto NEXT_I
@@ -472,15 +661,20 @@ origin 0x1000
 	if_eq COLLECT                                                # no pair was found: there is nothing to guess from
 	goto GROW
 
-# ==== SELECT: V = the D2 of the K-th closest pair ====
-#     V = 0
+# ==== SELECT and CONNECT: find the K closest pairs of the list and connect them ====
+# V becomes the D2 of the K-th closest pair, built bit by bit. The list shrinks on the way: when a LIMIT
+# turns out too small, the pairs below it are among the K closest for certain, so they are connected at
+# once and dropped; when it is large enough, the pairs from LIMIT up cannot be among them and are dropped.
+#     V = 0; BASE_COUNT = 0                                 # BASE_COUNT: pairs connected and dropped so far
 #     for STEP in the powers of two from the one at BP down to 1:       # the table BITS ends in 0
 #         LIMIT = V + STEP
-#         COUNT = the number of pairs in the list with D2 < LIMIT
-#         if COUNT < K: V = LIMIT
-# In the end fewer than K pairs have D2 < V, and K or more have D2 < V + 1: V is the K-th smallest D2.
+#         COUNT = BASE_COUNT + the number of pairs in the list with D2 < LIMIT
+#         if COUNT >= K: KEEP_BELOW = 1                     # drop the pairs with D2 >= LIMIT
+#         else: V = LIMIT; BASE_COUNT = COUNT; KEEP_BELOW = 0           # connect and drop the pairs below LIMIT
+#         SHRINK
+#     LIMIT = V + 1; KEEP_BELOW = 0; SHRINK                 # what is left with D2 <= V: connect it too
 @ SELECT
-	lia 0; putA V; putA V_H                                      # V = 0
+	lia 0; putA V; putA V_H; putA BASE_COUNT                     # V = 0; BASE_COUNT = 0
 @ NEXT_STEP
 	getAat BP; putA STEP                                         # STEP = the next power of two; lower word
 	getAoff BP 1; putA STEP_H                                    # upper word
@@ -488,7 +682,7 @@ origin 0x1000
 	if_eq SELECTED                                               # the 0 that ends the table
 	getA BP; lib 2; sum; putA BP                                 # BP = BP + 2
 	get32AB V STEP; sum; put32A LIMIT                            # LIMIT = V + STEP
-	lia 0; putA COUNT                                            # COUNT = 0
+	copy BASE_COUNT COUNT                                        # COUNT = BASE_COUNT
 	copy LIST E                                                  # E = the first pair of the list
 @ COUNT_NEXT
 	getA E; getB LIST_END                                        # A = E, B = LIST_END
@@ -502,36 +696,19 @@ origin 0x1000
 	getA E; lib 4; sum; putA E                                   # E = E + 4, the next pair
 	goto COUNT_NEXT
 @ COUNTED
+	lia 1; putA KEEP_BELOW                                       # KEEP_BELOW = 1, for when LIMIT is large enough
 	getA COUNT; getB K; sub                                      # A = COUNT - K
-	if_carry NEXT_STEP                                           # K or more pairs are below LIMIT: V stays
+	if_carry SHRINK_LIST                                         # K or more pairs are below LIMIT: V stays
 	copy LIMIT V; copy LIMIT_H V_H                               # fewer than K: V = LIMIT
+	copy COUNT BASE_COUNT                                        # BASE_COUNT = COUNT
+	lia 0; putA KEEP_BELOW                                       # KEEP_BELOW = 0
+@ SHRINK_LIST
+	do SHRINK                                                    # drop what cannot matter any more; connect what is certain
 	goto NEXT_STEP
-
-# ==== CONNECT: join the two boxes of every pair with D2 <= V ====
-#     LIMIT = V + 1
-#     for every pair (I, Q, D2) of the list with D2 < LIMIT:
-#         RA = ROOT(I); F = ROOT(Q)
-#         if F != RA: PARENT[F] = RA
 @ SELECTED
 	get32A V; lib 1; sum; put32A LIMIT                           # LIMIT = V + 1
-	copy LIST E                                                  # E = the first pair of the list
-@ CONNECT_NEXT
-	getA E; getB LIST_END                                        # A = E, B = LIST_END
-	if_eq CONNECTED                                              # the end of the list
-	getAoff E 2; putA D2                                         # D2 = the pair's D2; lower word
-	getAoff E 3; putA D2_H                                       # upper word
-	get32AB D2 LIMIT; sub                                        # A = D2 - LIMIT
-	if_carry CONNECT_STEP                                        # D2 > V: not one of the K closest
-	getAat E; putA F; do FIND                                    # F = the root of the pair's first box
-	copy F RA                                                    # RA = that root
-	getAoff E 1; putA F; do FIND                                 # F = the root of the pair's second box
-	getA F; getB RA                                              # A = F, B = RA
-	if_eq CONNECT_STEP                                           # the same root: the boxes are in one circuit already
-	getA F; getB TO_PARENT; sum                                  # A = F + 0x1800, the address of F's PARENT
-	getB RA; store rgB rgA                                       # PARENT[F] = RA: the two circuits are one
-@ CONNECT_STEP
-	getA E; lib 4; sum; putA E                                   # E = E + 4, the next pair
-	goto CONNECT_NEXT
+	lia 0; putA KEEP_BELOW                                       # KEEP_BELOW = 0
+	do SHRINK                                                    # connect the pairs that are left with D2 <= V
 
 # ==== COUNT: the size of every circuit, kept at its root ====
 #     for every box P: F = ROOT(P); SIZE[F] = SIZE[F] + 1
@@ -659,6 +836,55 @@ origin 0x1800
 	sum; put32A D2                                               # D2 = D2 + S * S
 	ret
 
+# SHRINK: go through the list once and keep only part of it, moved up to its start.
+#     W = LIST
+#     for every pair at E of the list:
+#         if D2 < LIMIT:
+#             if KEEP_BELOW == 1: keep it
+#             else: connect its two boxes (it is one of the K closest); drop it
+#         else:
+#             if KEEP_BELOW == 0: keep it
+#     LIST_END = W                                          # keep: copy the four words to W; W = W + 4
+@ SHRINK
+	copy LIST E; copy LIST W                                     # E = W = the first pair of the list
+@ SHRINK_NEXT
+	getA E; getB LIST_END                                        # A = E, B = LIST_END
+	if_eq SHRINK_DONE                                            # the end of the list
+	getAoff E 2; putA D2                                         # D2 = the pair's D2; lower word
+	getAoff E 3; putA D2_H                                       # upper word
+	get32AB D2 LIMIT; sub                                        # A = D2 - LIMIT
+	if_carry SHRINK_ABOVE                                        # D2 >= LIMIT
+	getA KEEP_BELOW; lib 0                                       # D2 < LIMIT: A = KEEP_BELOW, B = 0
+	if_neq SHRINK_KEEP                                           # the pairs below LIMIT are kept
+	getAat E; putA F; do FIND                                    # one of the K closest: F = the root of its first box
+	copy F RA                                                    # RA = that root
+	getAoff E 1; putA F; do FIND                                 # F = the root of its second box
+	getA F; getB RA                                              # A = F, B = RA
+	if_eq SHRINK_STEP                                            # the same root: the boxes are in one circuit already
+	getA F; getB TO_PARENT; sum                                  # A = F + 0x1800, the address of F's PARENT
+	getB RA; store rgB rgA                                       # PARENT[F] = RA: the two circuits are one
+	goto SHRINK_STEP
+@ SHRINK_ABOVE
+	getA KEEP_BELOW; lib 0                                       # A = KEEP_BELOW, B = 0
+	if_neq SHRINK_STEP                                           # the pairs from LIMIT up are dropped
+@ SHRINK_KEEP
+	getAat E; putAat W; inc W                                    # copy the pair to W: the address of I
+	getAoff E 1; putAat W; inc W                                 # the address of Q
+	getA D2; putAat W; inc W                                     # the lower word of D2
+	getA D2_H; putAat W; inc W                                   # the upper word of D2
+@ SHRINK_STEP
+	getA E; lib 4; sum; putA E                                   # E = E + 4, the next pair
+	goto SHRINK_NEXT
+@ SHRINK_DONE
+	copy W LIST_END                                              # LIST_END = W
+	ret
+
+# SHIFT_LEFT: A = A shifted left NSHIFT times. The CPU can only shift by a number written in the
+# instruction, so this jumps into a row of sixteen "shift by 1" at the place that leaves NSHIFT of them
+# to run; ENTRY holds that address. The row (at 0x1F00) ends in the ret.
+@ SHIFT_LEFT
+	lib ENTRY; load rgSP rgB                                     # go on at the address in ENTRY
+
 # FIND: F = the root of the circuit of the box at F.
 #     while PARENT[F] != F: F = PARENT[F]
 @ FIND
@@ -721,6 +947,18 @@ origin 0x1E40
 # ---- The gaps of the sort, then 0 ----
 origin 0x1E80
 364; 121; 40; 13; 4; 1; 0
+
+# ---- The neighbours of a cell: what to add to CORNER for each, then 0xFFFF ----
+origin 0x1E90
+0; 1; 2; 32; 33; 34; 64; 65; 66; 0xFFFF
+
+# ---- The row of shifts of SHIFT_LEFT: entered NSHIFT words before its end ----
+origin 0x1F00
+	shf | 1; shf | 1; shf | 1; shf | 1
+	shf | 1; shf | 1; shf | 1; shf | 1
+	shf | 1; shf | 1; shf | 1; shf | 1
+	shf | 1; shf | 1; shf | 1; shf | 1
+	ret
 
 # ---- The boxes: 20, then the end mark ----
 # Six words per box: X, Y, Z, each lower word first.

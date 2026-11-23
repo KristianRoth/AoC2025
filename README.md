@@ -111,10 +111,10 @@ Measured in the `vcb` engine on `cpu-32bit-autorun-aoc1p1.vcb`, to the Breakpoin
 | Day 7 part 1 | 1660 | 117,191,312 | 0.4 s | 458,000 | 20,310 words |
 | Day 7 part 2, example | 40 | 3,740,432 | 0.03 s | 15,000 | 733 words |
 | Day 7 part 2 | 305999729392659 | 250,336,656 | 0.9 s | 978,000 | 20,641 words |
-| Day 8 part 1, example | 40 | 63,673,040 | 0.4 s | 249,000 | 1,401 words |
-| Day 8 part 1 | 62186 | 2,708,835,664 | 12 s | 10,581,000 | 7,281 words |
-| Day 8 part 2, example | 25272 | 50,562,128 | 0.4 s | 198,000 | 1,747 words |
-| Day 8 part 2 | 8420405530 | 8,664,842,064 | 41 s | 33,847,000 | 7,627 words |
+| Day 8 part 1, example | 40 | 55,338,064 | 0.5 s | 216,000 | 2,016 words |
+| Day 8 part 1 | 62186 | 1,110,321,360 | 7 s | 4,337,000 | 7,896 words |
+| Day 8 part 2, example | 25272 | 69,949,200 | 0.5 s | 273,000 | 2,290 words |
+| Day 8 part 2 | 8420405530 | 3,875,322,704 | 26 s | 15,138,000 | 8,170 words |
 
 "Instructions run" is the tick count divided by 256, the cost of most instructions:
 
@@ -185,17 +185,32 @@ Notes on the day 7 solutions:
 
 Notes on the day 8 solutions:
 
-- **Almost no distance is worked out.** 1,000 boxes make 499,500 pairs, and a distance needs three squares on a CPU without a multiply. The program takes a length T and only looks at pairs less than T apart in X, then drops those T or more apart in Y or Z; only what is left gets its squared distance. If fewer than 1,000 pairs come out closer than T, T was too small and the pairs are gone through again with a larger one.
-- **The boxes are sorted by X first** (a Shell sort of their addresses, 0.2 thousand million ticks). Then for each box the loop over its partners stops at the first one that is T or more away in X. At T = 8192 that is 16% of the pairs.
-- **T grows by a guess.** Twice the length holds about eight times the pairs, so after a round T is doubled until that guess reaches the pairs wanted. For this input 3 pairs are closer than 1024, and T goes straight to 8192, where 1,085 are. A wrong guess costs time, never the answer.
+- **Almost no distance is worked out.** 1,000 boxes make 499,500 pairs, and a distance needs three squares on a CPU without a multiply. The program takes a length T, looks only at pairs that can be closer than T, and works out the squared distance of those that are less than T apart in each of X, Y and Z. If too few pairs come out closer than T, T was too small and it starts again with a larger one.
+- **The boxes are sorted by X first** (a Shell sort of their addresses), and **into cells in Y and Z** of side T or more. Two boxes less than T apart are in the same cell or in neighbouring ones, so a box is only paired with the boxes of the 9 cells around it that come after it in X, up to the first that is T or more away in X. A cell number is a coordinate shifted right; the CPU has no right shift and shifts left only by a fixed number, so the program jumps into a row of sixteen "shift left by 1" at the right place and takes the upper half of the register.
+- **T grows by a guess.** Twice the length holds about eight times the pairs, so after a round T is doubled until that guess reaches the pairs wanted: 1,000 in part 1, four for every box in part 2. For this input 3 pairs are closer than 1024, and T goes straight to 8192 in part 1 (1,085 pairs) and to 16384 in part 2 (7,752 pairs). A wrong guess costs time, never the answer.
 - **Squares come from a table.** The program first makes the squares of 0 to 383 by adding odd numbers. A difference S is cut into H = S / 256 and L = S mod 256, and S² = H²·65536 + 2HL·256 + L² with 2HL = (H+L)² − H² − L²: three lookups, about 75 instructions, where doubling and adding bit by bit took about 500.
-- **Nothing is sorted by distance.** Part 1 finds the 1,000 closest of the 1,085 by building the 1,000th smallest squared distance bit by bit (counts over the list). The order of connecting does not change the circuits.
+- **Nothing is sorted by distance.** Part 1 builds the 1,000th smallest squared distance bit by bit, by counting over the list. A trial value that was too small tells that the pairs below it are among the 1,000 (they are connected at once and dropped); one that was large enough, that the pairs above it are not (dropped). The order of connecting does not change the circuits.
 - **Circuits are trees of parents.** Every box points at a parent; the box that is its own parent names the circuit. Connecting is finding two roots and pointing one at the other.
-- **Part 2 does not connect in order either.** The last connection has some length L: the pairs shorter than L do not make one circuit, the pairs up to L do. T grows until connecting the whole list gives one circuit (8192, then 16384 with 7,752 pairs), and L's square is built bit by bit. Each trial starts from the circuits already known for the pairs below the current value, and after each trial the list drops the pairs that can no longer matter, so the trials get shorter and shorter.
-- **The first versions** (commits `d8ee21d` and `9154cba`) went through all pairs in every round, doubled T one step at a time, squared bit by bit, and in part 2 rebuilt the circuits from single boxes for each of 30 trials: 22,469,978,064 ticks for part 1 and 66,405,158,992 for part 2. These are 8.3 and 7.7 times faster.
-- **Where the time goes now.** Part 1: the round at T = 8192 is 1.9 of the 2.7 thousand million ticks; a pair that is near in X costs about 90 instructions (three coordinates of two words each, and loading both words of one register needs the other register for the address). Part 2: the rounds at 8192 and 16384 are about 6 of the 8.7.
-- **In the game** at 5 million ticks a second: about 9 minutes for part 1 and 29 for part 2.
-- **Size:** about 1,280 words of code, variables and tables in part 1 and 1,630 in part 2; the rest is the boxes, six words each.
+- **Part 2 does not connect in order either.** The last connection has some length L: the pairs shorter than L do not make one circuit, the pairs up to L do. L's square is built bit by bit. Each trial starts from the circuits already known for the pairs below the current value, and after each trial the list drops the pairs that can no longer matter.
+- **Where the time goes now.** Part 1 (1.11 thousand million ticks): the table of squares and the sort 0.21, the round at T = 1024 that only gives the guess 0.27, the round at T = 8192 0.51, selecting and connecting 0.10. Part 2 (3.88): 0.21 and 0.27 the same, the round at T = 16384 with its first trial 2.46, the other trials 0.93.
+- **In the game** at 5 million ticks a second: about 4 minutes for part 1 and 13 for part 2.
+- **Size:** about 1,890 words of code, variables and tables in part 1 and 2,170 in part 2; the rest is the boxes, six words each.
+
+How the day 8 programs got faster (ticks to the Breakpoint; every step was measured alone against the version before it):
+
+| Version | Part 1 | Part 2 |
+|---|---|---|
+| First (commits `d8ee21d`, `9154cba`): every round goes through all pairs, T doubles one step at a time, squares bit by bit, part 2 rebuilds the circuits for each of 30 trials | 22,469,978,064 | 66,405,158,992 |
+| Second (commit `582edce`): sorted by X, squares from a table, T grown by a guess, part 2's trials built on each other | 2,708,835,664 | 8,664,842,064 |
+| Second + part 2 aims T at four pairs for every box (skips its round at 8192) | the same | 6,768,498,576 |
+| Second + X compared against a bound word by word, the X difference only for pairs that pass Y and Z | 2,453,040,784 | 8,022,862,352 |
+| Second + part 1's list shrinks while the 1,000th distance is built | 2,445,577,040 | the same |
+| Second + finding a root shortens the chains of parents | 2,717,078,864 (slower: not used in part 1) | 8,189,467,472 |
+| Second + cells in Y only (with the X bound) | 1,502,399,888 | 5,796,974,672 |
+| Second + cells in Y and Z (with the X bound) | 1,373,579,984 | 4,907,559,760 |
+| **Now: all of them, cells in Y and Z** | **1,110,321,360** | **3,875,322,704** |
+
+That is 20 times faster than the first version for part 1 and 17 times for part 2. The two examples take about as long as before: with 20 boxes the cells cost as much as they save.
 
 ## Instruction set
 
