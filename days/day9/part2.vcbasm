@@ -1,0 +1,1321 @@
+# Advent of Code 2025, day 9 part 2 (Movie Theater)
+#
+# THE PUZZLE
+# The input is a list of red tiles, each a position X,Y. Each red tile is joined to the next one in the
+# list (and the last to the first) by a straight line of green tiles, and everything inside that loop is
+# green too. The answer is the area of the largest rectangle that has red tiles at two opposite corners
+# and holds only red and green tiles.
+#
+# THE IDEA
+# Only the order of the coordinates matters for "inside", so every tile first gets two small numbers:
+# XR, the rank of its X among all X that occur (0 for the smallest), and YR, the same for Y.
+#   - Cut the floor into bands: band r lies between the rows of rank r and rank r + 1. Inside one band
+#     the loop is the same at every height: a few stretches of X are inside, the rest is outside. A
+#     stretch runs from one upright line of the loop to the next. The stretches of all bands are found in
+#     one sweep from the lowest row upwards, keeping the list of upright lines that cross the band:
+#     a red tile ends the upright line below it or starts one above it, so each tile of a row puts its
+#     XR into the list when it is not there and takes it out when it is.
+#   - A rectangle is inside the loop when, in every band it crosses, it lies within one stretch.
+#   - So take each red tile P as the lower corner and walk up band by band. In each band find the
+#     stretch that holds P's XR (none: stop). LO and HI are the largest left end and the smallest right
+#     end met so far. A red tile Q on the row above the band is a good upper corner exactly when its XR
+#     is from LO to HI. Only then is the area looked at.
+#   - Two red tiles on the same row are only taken as a rectangle when they follow each other in the
+#     list (that row of tiles is green for certain).
+# The area test is part 1's: a rectangle W wide and H high has area at most ((W + H) / 2) squared, so
+# with R = the whole part of 2 * (square root of BEST) nothing is multiplied when W + H <= R.
+# The example, lower corner P = 2,3 (XR 0, YR 1): band 1 has the stretch XR 0 to 4 (X 2 to 11); the row
+# above has the tiles 2,5 and 9,5 (XR 0 and 2): both good. 9,5 gives 8 * 3 = 24. Band 2 has the stretch
+# XR 2 to 4, which does not hold XR 0: stop.
+#
+# THE WHOLE PROGRAM IN PSEUDO CODE
+#     put the address of every tile in the lists BY_X and BY_Y
+#     sort BY_X by X; XR of every tile = the rank of its X
+#     sort BY_Y by Y; YR of every tile = the rank of its Y; LEVEL_START[r] = where rank r begins in BY_Y
+#     ACTIVE = empty                                        # SWEEP
+#     for every rank r of Y, from 0 upwards:
+#         for every tile on row r: its XR goes into ACTIVE if it is not there, else out of it
+#         SLAB[r] = a copy of ACTIVE (sorted): its 1st and 2nd number are a stretch, the 3rd and 4th, ...
+#     BEST = 0; R = 0
+#     for every tile P: EVALUATE(P, the tile after P in the list)       # the loop's own lines
+#     for every tile P:                                     # WALK
+#         LO = 0; HI = 0xFFFF
+#         for r = YR of P; ; r = r + 1:
+#             (A0, A1) = the stretch of SLAB[r] with A0 <= XR of P <= A1; if there is none: break
+#             LO = the larger of LO and A0; HI = the smaller of HI and A1
+#             for every tile Q on row r + 1: if LO <= XR of Q <= HI: EVALUATE(P, Q)
+#     write BEST as 15 decimal digits
+#     stop
+#
+#     EVALUATE(P, Q):
+#         W = |x(P) - x(Q)| + 1; H = |y(P) - y(Q)| + 1
+#         if W + H <= R: return
+#         AREA = W * H
+#         if AREA > BEST: BEST = AREA; R = the largest number with R * R <= 4 * BEST
+#
+# NUMBERS OF 32 BITS AND OF FOUR WORDS
+# A coordinate, W, H and R are two 16-bit words each, lower word first, and fit the 32-bit registers
+# whole: get32A v loads both words of v into A, and one sum or sub works on all 32 bits. Loading the
+# two words of one register needs the other register for the address. A variable's upper word has the
+# name of the variable with _H. The ranks are small and take one word.
+# An area is wider still. BEST, AREA, FOUR and the numbers of the decimal digits are four 16-bit words
+# each, 0 the lowest, added word by word with a carry, and subtracted as X + (every bit of Y flipped)
+# + 1; the carry out of the top word then tells whether X >= Y.
+#
+# THE RESULT, when the CPU stops on the Breakpoint at END
+#   0x0100-0x0103  BEST as four 16-bit words, lowest first
+#   0x0110-0x011E  BEST as 15 decimal digits, one per word, most significant first
+#
+# THE INPUT (rule 1 of RULES.md), at 0x2000, the same words as in part 1
+# Four words per tile, in the order of the input: X, then Y, each as two 16-bit words, lower word first
+# (97615 = 0x0001_7D4F is stored as 0x7D4F; 0x0001). After the last tile come two words 0xFFFF.
+# Built-in limits: 4 to 2,000 tiles; coordinates below 1,048,576; the answer below 10^15; the loop does
+# not touch or cross itself; the stretches of all bands together take at most 22,000 words; two lines
+# of the loop with the outside between them are at least 2 apart (the program takes the floor between
+# the lines as a whole: with two such lines side by side every tile would be green, yet it says no).
+#
+# THE IDIOMS (v is a variable's address, below 0x1000)
+#     getA v / getB v          A or B = the word at v, upper half 0
+#     putA v                   the word at v = A   (this uses up B)
+#     get32A v / get32B v      A or B = the 32-bit number at v and v + 1; loading one register uses up the other
+#     get32AB v w              A = the 32-bit number at v, B = the one at w (A waits on the stack while B is loaded)
+#     put32A v                 the 32-bit number at v and v + 1 = A   (this uses up B)
+#     getAat p / putAat p      the same as getA / putA for the word the pointer p points at
+#     getAoff p k              A = the word at the address (p + k); p is a variable holding an address
+#     copy v w                 w = v
+#     keepcarry v              v = the upper half of A: the carry of the sum just made
+#     if_eq L / if_neq L       compares A with B as they are now
+#     sub; if_carry L          after A - B: taken when A >= B
+# |a - b| is: sub; when that went below 0, flip every bit (neg) and add 1.
+# What each instruction does exactly is in findings/cpu-instructions.md.
+#
+# MEMORY MAP
+#   0x0100-0x018F  variables            0x2000-  the tiles (496 and the end mark end at 0x27C1)
+#   0x1000-        the program          0x4000-  XR and YR: for the tile at address P, XR is the word at
+#   0x1800-        the subroutines               P + 0x2000 and YR the word at P + 0x2001
+#   0x1E00-        POWERS: 10^14 down to 1, four words each, then 0
+#   0x1E40-        BITS: 2^20 down to 1, two words each, then 0, 0;  GAPS at 0x1E80: the gaps of the sort, then 0
+#   0x6000-0x67FF  BY_X: the addresses of the tiles, sorted by X    0x6800-0x6FFF  BY_Y: the same, sorted by Y
+#   0x7000-0x77FF  LEVEL_START: for rank r of Y, the address in BY_Y of the first tile on that row; after the
+#                  last rank, the address after BY_Y
+#   0x7800-0x7FFF  SLAB: for rank r, the address of the band's stretches
+#   0x8000-0x87FF  ACTIVE: the XR of the upright lines that cross the band being made, sorted
+#   0x8800-0xDFFF  the stretches: for each band its copy of ACTIVE, then 0xFFFF
+#   0xFF00         where the CPU starts
+
+# ---- The CPU's instructions as symbols (day 1's table without its _32 names, which the CPU ignores) ----
+symbol nop 0b0000_0000_0000_0000            # the word 0: stops the CPU (the same word as non)
+symbol ld  0b0010_0000_0000_0000            # load a register from memory (used through the load macro)
+symbol lia 0b0011_0000_0000_0000            # lia n: A = n (0 to 4095), upper half 0
+symbol lib 0b0100_0000_0000_0000            # lib n: B = n (0 to 4095), upper half 0
+symbol sto 0b0101_0000_0000_0000            # store a register to memory (used through the store macro)
+
+macro  load  { ld  | a? | (b? >> 6) }       # load X Y: X = the word at the address in Y
+macro  store { sto | a? | (b? >> 6) }       # store X Y: the word at the address in Y = X
+
+symbol sum    0b0110_0100_0000_0000         # A = A + B (32 bits), sets zero, carry, nega
+symbol sub    0b0110_0010_0000_0000         # A = A - B (32 bits), sets zero, carry, nega
+symbol shf    0b0110_0001_0000_0000         # shf | k: A = A shifted left by k (0 to 15)
+symbol and    0b0110_0000_1000_0000         # A = A and B
+symbol or     0b0110_0000_0100_0000         # A = A or B
+symbol xor    0b0110_0000_0010_0000         # A = A xor B
+symbol neg    0b0110_0000_0001_0000         # A = every bit of A flipped
+
+symbol psh 0b1010_0000_0000_0000            # psh X: push the 16 bits of X
+symbol pop 0b1011_0000_0000_0000            # pop X: pop 16 bits into X
+
+symbol jmp  0b1100_0000_0000_0000           # jmp; L: go to L.  jmp c; L: go to L when c holds
+symbol call 0b1110_0000_0000_0000           # call; L: run the subroutine at L
+symbol ret  0b1111_0000_0000_0000           # return from a subroutine
+
+# The registers, as load, store, psh and pop name them
+symbol rgAH 0b1000_0000_0000                # the upper 16 bits of A
+symbol rgA  0b0100_0000_0000                # the lower 16 bits of A
+symbol rgBH 0b0010_0000_0000                # the upper 16 bits of B
+symbol rgB  0b0001_0000_0000                # the lower 16 bits of B
+symbol rgSP 0b0000_1000_0000                # the program counter (leave alone)
+symbol rgSB 0b0000_0100_0000                # the stack pointer (leave alone)
+symbol non  0                               # stops the CPU (Breakpoint): the end of the program
+
+# The conditions of jmp
+symbol zero  0b1000_0000_0000               # the last sum or sub gave 0
+symbol carry 0b0100_0000_0000               # the last sum carried, or the last sub did not borrow (A >= B)
+symbol nega  0b0010_0000_0000               # the last sub went below 0 (A < B)
+symbol eq    0b0001_0000_0000               # A == B right now
+symbol neq   0b0000_1000_0000               # A != B right now
+
+# ---- Macros for the common operations (explained in the README). A macro cannot use another macro, so
+#      load and store are spelled out here. v: a variable, p: a variable holding an address, L: a label ----
+macro getA     { lia a?; ld | rgA | (rgA >> 6) }                                              # A = v
+macro getB     { lib a?; ld | rgB | (rgB >> 6) }                                              # B = v
+macro putA     { lib a?; sto | rgA | (rgB >> 6) }                                             # v = A (uses B)
+macro getAat   { lia a?; ld | rgA | (rgA >> 6); ld | rgA | (rgA >> 6) }                       # A = the word p points at
+macro putAat   { lib a?; ld | rgB | (rgB >> 6); sto | rgA | (rgB >> 6) }                      # the word p points at = A (uses B)
+macro inc      { lia a?; ld | rgA | (rgA >> 6); lib 1; sum; lib a?; sto | rgA | (rgB >> 6) }  # v = v + 1 (uses A and B)
+macro goto     { jmp; a? }                                                                    # go to L
+macro if_eq    { jmp eq; a? }                                                                 # go to L when A == B
+macro do       { call; a? }                                                                   # call the subroutine L
+macro if_carry { jmp carry; a? }                                                              # go to L after a sub when A >= B
+macro getAoff  { lia a?; ld | rgA | (rgA >> 6); lib b?; sum; ld | rgA | (rgA >> 6) }                # A = the word at (p + k) (uses B)
+macro copy     { lia a?; ld | rgA | (rgA >> 6); lib b?; sto | rgA | (rgB >> 6) }                      # w = v (uses A and B)
+macro get32A   { lib | (a? + 1); ld | rgAH | (rgB >> 6); lib a?; ld | rgA | (rgB >> 6) }                  # A = the 32 bits at v, v + 1 (uses B)
+macro get32B   { lia | (a? + 1); ld | rgBH | (rgA >> 6); lia a?; ld | rgB | (rgA >> 6) }                  # B = the 32 bits at v, v + 1 (uses A)
+macro get32AB  { lib | (a? + 1); ld | rgAH | (rgB >> 6); lib a?; ld | rgA | (rgB >> 6); psh rgAH; psh rgA; lia | (b? + 1); ld | rgBH | (rgA >> 6); lia b?; ld | rgB | (rgA >> 6); pop rgA; pop rgAH }
+# get32AB v w: A = the 32 bits at v, B = the 32 bits at w
+macro put32A   { lib a?; sto | rgA | (rgB >> 6); lib | (a? + 1); sto | rgAH | (rgB >> 6) }                # the 32 bits at v, v + 1 = A (uses B)
+
+macro keepcarry { psh rgAH; pop rgB; lia a?; sto | rgB | (rgA >> 6) }                                 # v = the upper half of A (uses A and B)
+macro if_neq   { jmp neq; a? }                                                                # go to L when A != B
+
+
+# ---- Variables (all below 0x1000, so lia/lib can address them). NAME_H is the upper word of the 32-bit NAME ----
+# The result, four words: the largest area so far
+pointer BEST0 0x0100 0
+pointer BEST1 0x0101 0
+pointer BEST2 0x0102 0
+pointer BEST3 0x0103 0
+# R: the largest number with R * R <= 4 * BEST. A pair with W + H <= R cannot beat BEST
+pointer R 0x0120 0
+pointer R_H 0x0121 0
+# P, Q: the addresses of two tiles. XP, YP, XQ, YQ: copies of their coordinates. PEND: the address after the last tile
+pointer P 0x0122 0x2000
+pointer Q 0x0123 0
+pointer XP 0x0124 0
+pointer XP_H 0x0125 0
+pointer YP 0x0126 0
+pointer YP_H 0x0127 0
+pointer XQ 0x0128 0
+pointer XQ_H 0x0129 0
+pointer YQ 0x012A 0
+pointer YQ_H 0x012B 0
+pointer PEND 0x012C 0
+# SP, DP: where the next addresses go in BY_X and BY_Y. X_END, Y_END: the addresses after their last words
+pointer SP 0x012D 0x6000
+pointer DP 0x012E 0x6800
+pointer X_END 0x012F 0
+pointer Y_END 0x0130 0
+# ADR: an address worked out for a load or a store
+pointer ADR 0x0131 0
+# What SORT and RANK work on: the list from LIST_BASE to LIST_END; KEYOFF: what to add to a tile's address for its key;
+# RANKOFF: what to add to it for the address of the rank
+pointer LIST_BASE 0x0132 0
+pointer LIST_END 0x0133 0
+pointer KEYOFF 0x0134 0
+pointer RANKOFF 0x0135 0
+# For SORT: GAPP the next gap in the table, GAP the gap, IP the word being placed, JP where it may go, GP = JP - GAP
+pointer GAPP 0x0136 0
+pointer GAP 0x0137 0
+pointer IP 0x0138 0
+pointer JP 0x0139 0
+pointer GP 0x013A 0
+# MOVED: the tile address being placed, KEY its key. OTHER: the tile address at GP, OTHER_KEY its key (in RANK: the key before)
+pointer MOVED 0x013B 0
+pointer KEY 0x013C 0
+pointer KEY_H 0x013D 0
+pointer OTHER 0x013E 0
+pointer OTHER_KEY 0x013F 0
+pointer OTHER_KEY_H 0x0140 0
+# RANKV: the rank being given out. LSP, SLP: places in the tables LEVEL_START and SLAB
+pointer RANKV 0x0141 0
+pointer LSP 0x0142 0
+pointer SLP 0x0143 0
+# For the sweep: ROW_END the address in BY_Y after the row, XRQ the XR of a tile, AP a place in ACTIVE, ACT_END the address
+# after ACTIVE's last word, FREE the next free word for the stretches
+pointer ROW_END 0x0144 0
+pointer XRQ 0x0145 0
+pointer AP 0x0146 0
+pointer ACT_END 0x0147 0
+pointer FREE 0x0148 0x8800
+# For the walk: XRP the XR of P, LEVEL the rank of the band, LO and HI the limits for an upper corner, FP a place in the
+# band's stretches, A0 and A1 the ends of a stretch, QP and Q_END the tiles of the row above in BY_Y
+pointer XRP 0x0149 0
+pointer LEVEL 0x014A 0
+pointer LO 0x014B 0
+pointer HI 0x014C 0
+pointer FP 0x014D 0
+pointer A0 0x014E 0
+pointer A1 0x014F 0
+pointer QP 0x0150 0
+pointer Q_END 0x0151 0
+# W, H: the width and height of a rectangle. SPAN: W + H
+pointer W 0x0152 0
+pointer W_H 0x0153 0
+pointer H 0x0154 0
+pointer H_H 0x0155 0
+pointer SPAN 0x0156 0
+pointer SPAN_H 0x0157 0
+# For MULTIPLY: AREA = W * H, MBIT the power of two being looked at, DOUBLED4 = W * MBIT
+pointer AREA0 0x0158 0
+pointer AREA1 0x0159 0
+pointer AREA2 0x015A 0
+pointer AREA3 0x015B 0
+pointer MBIT 0x015C 0
+pointer MBIT_H 0x015D 0
+pointer DOUBLED40 0x015E 0
+pointer DOUBLED41 0x015F 0
+pointer DOUBLED42 0x0160 0
+pointer DOUBLED43 0x0161 0
+# For NEW_R: FOUR = 4 * BEST, BP the next power of two in the table, STEP that power, TRY_R = R + STEP
+pointer FOUR0 0x0162 0
+pointer FOUR1 0x0163 0
+pointer FOUR2 0x0164 0
+pointer FOUR3 0x0165 0
+pointer BP 0x0166 0
+pointer STEP 0x0167 0
+pointer STEP_H 0x0168 0
+pointer TRY_R 0x0169 0
+pointer TRY_R_H 0x016A 0
+# The carry from one word of an addition into the next
+pointer CARRY 0x016B 0
+# SUBTRACT works out DIFF = X - Y, and CARRY = 1 when X >= Y
+pointer X0 0x016C 0
+pointer X1 0x016D 0
+pointer X2 0x016E 0
+pointer X3 0x016F 0
+pointer Y0 0x0170 0
+pointer Y1 0x0171 0
+pointer Y2 0x0172 0
+pointer Y3 0x0173 0
+pointer DIFF0 0x0174 0
+pointer DIFF1 0x0175 0
+pointer DIFF2 0x0176 0
+pointer DIFF3 0x0177 0
+# For the decimal digits: how often the current power of ten fitted
+pointer DIGIT_VALUE 0x0178 0
+# Pointers: DIGIT the next digit to write, POW the next power of ten
+pointer DIGIT 0x0179 0x0110
+pointer POW 0x017A 0x1E00
+# Constants that do not fit an instruction's place for a number
+pointer POINTS 0x017B 0x2000
+pointer BY_X 0x017C 0x6000
+pointer BY_Y 0x017D 0x6800
+pointer TO_XR 0x017E 0x2000
+pointer TO_YR 0x017F 0x2001
+pointer LS_BASE 0x0180 0x7000
+pointer SL_BASE 0x0181 0x7800
+pointer ACTIVE 0x0182 0x8000
+pointer BITS 0x0183 0x1E40
+pointer GAPS 0x0184 0x1E80
+pointer END_MARK 0x0185 0xFFFF
+pointer ALL_ONES 0x0186 0xFFFF
+
+# ---- The CPU starts at 0xFF00 ----
+origin 0xFF00
+goto MAIN
+
+origin 0x1000
+@ MAIN
+# ==== go through the tiles once ====
+#     while the tile at P is not the end mark:              # P starts at the first tile
+#         memory[SP] = P; SP = SP + 1                       # BY_X
+#         memory[DP] = P; DP = DP + 1                       # BY_Y
+#         P = P + 4
+#     PEND = P; X_END = SP; Y_END = DP
+@ INIT_NEXT
+	getAoff P 1; getB END_MARK                                   # A = the upper word of the tile's X, B = 0xFFFF
+	if_eq INIT_DONE                                              # the end mark: no more tiles
+	getA P; putAat SP; inc SP                                    # memory[SP] = P; SP = SP + 1
+	getA P; putAat DP; inc DP                                    # memory[DP] = P; DP = DP + 1
+	getA P; lib 4; sum; putA P                                   # P = P + 4, the next tile
+	goto INIT_NEXT
+@ INIT_DONE
+	copy P PEND; copy SP X_END; copy DP Y_END                    # the addresses after the tiles and after the two lists
+
+# ==== the ranks ====
+#     LIST = BY_X, keys X: SORT; RANK into XR
+#     LIST = BY_Y, keys Y: SORT; RANK into YR               # RANK also fills LEVEL_START; the second time counts
+	copy BY_X LIST_BASE; copy X_END LIST_END                     # the list BY_X
+	lia 0; putA KEYOFF; copy TO_XR RANKOFF                       # its keys are the X, the first two words of a tile; the ranks go to XR
+	do SORT                                                      # sort it by X
+	do RANK                                                      # XR of every tile
+	copy BY_Y LIST_BASE; copy Y_END LIST_END                     # the list BY_Y
+	lia 2; putA KEYOFF; copy TO_YR RANKOFF                       # its keys are the Y, the next two words of a tile; the ranks go to YR
+	do SORT                                                      # sort it by Y
+	do RANK                                                      # YR of every tile, and LEVEL_START
+
+# ==== SWEEP: the stretches of every band ====
+#     ACT_END = ACTIVE                                      # ACTIVE is empty
+#     for LSP = LS_BASE, SLP = SL_BASE; memory[LSP] != Y_END; LSP = LSP + 1, SLP = SLP + 1:
+#         for IP = memory[LSP]; IP != memory[LSP + 1]; IP = IP + 1:      # the tiles of one row
+#             XRQ = XR of the tile at IP
+#             AP = the first place of ACTIVE with a number >= XRQ
+#             if that number == XRQ: take it out (the words after it move down one place)
+#             else: put XRQ in there (the words from there on move up one place)
+#         memory[SLP] = FREE                                # the band above this row
+#         copy ACTIVE to FREE, then 0xFFFF; FREE = the word after
+	copy ACTIVE ACT_END                                          # ACTIVE is empty
+	copy LS_BASE LSP; copy SL_BASE SLP                           # LSP, SLP = the first words of LEVEL_START and SLAB
+@ SWEEP_ROW
+	getAat LSP; putA IP                                          # IP = the first tile of the row in BY_Y
+	getB Y_END                                                   # B = the address after BY_Y (A still holds IP)
+	if_eq SWEEP_DONE                                             # no more rows
+	inc LSP                                                      # LSP = LSP + 1
+	getAat LSP; putA ROW_END                                     # ROW_END = where the next row begins
+@ SWEEP_TILE
+	getA IP; getB ROW_END                                        # A = IP, B = ROW_END
+	if_eq SWEEP_STORE                                            # the row is done
+	getAat IP; getB TO_XR; sum; load rgA rgA; putA XRQ           # XRQ = the XR of the tile at IP
+	copy ACTIVE AP                                               # AP = the first place of ACTIVE
+@ TOGGLE_FIND
+	getA AP; getB ACT_END                                        # A = AP, B = ACT_END
+	if_eq TOGGLE_INSERT                                          # the end of ACTIVE: XRQ goes in here
+	getAat AP; getB XRQ                                          # A = the number at AP, B = XRQ
+	if_eq TOGGLE_REMOVE                                          # it is there: it goes out
+	sub                                                          # A = the number at AP - XRQ
+	if_carry TOGGLE_INSERT                                       # a larger number: XRQ goes in before it
+	inc AP                                                       # AP = AP + 1
+	goto TOGGLE_FIND
+@ TOGGLE_REMOVE
+	getA AP; lib 1; sum; putA JP                                 # JP = AP + 1
+	getB ACT_END                                                 # B = ACT_END (A still holds JP)
+	if_eq TOGGLE_REMOVED                                         # nothing is left to move down
+	getAat JP; putAat AP                                         # memory[AP] = memory[AP + 1]
+	copy JP AP                                                   # AP = AP + 1
+	goto TOGGLE_REMOVE
+@ TOGGLE_REMOVED
+	copy AP ACT_END                                              # ACT_END = ACT_END - 1
+	goto SWEEP_NEXT_TILE
+@ TOGGLE_INSERT
+	copy ACT_END JP                                              # JP = ACT_END
+@ INSERT_MOVE
+	getA JP; getB AP                                             # A = JP, B = AP
+	if_eq INSERT_PUT                                             # everything from AP on has moved up
+	getA JP; lib 1; sub; putA GP                                 # GP = JP - 1
+	getAat GP; putAat JP                                         # memory[JP] = memory[JP - 1]
+	copy GP JP                                                   # JP = JP - 1
+	goto INSERT_MOVE
+@ INSERT_PUT
+	getA XRQ; putAat AP                                          # memory[AP] = XRQ
+	inc ACT_END                                                  # ACT_END = ACT_END + 1
+@ SWEEP_NEXT_TILE
+	inc IP                                                       # IP = IP + 1
+	goto SWEEP_TILE
+@ SWEEP_STORE
+	getA FREE; putAat SLP                                        # memory[SLP] = FREE: where this band's stretches begin
+	inc SLP                                                      # SLP = SLP + 1
+	copy ACTIVE AP                                               # AP = the first place of ACTIVE
+@ STORE_NEXT
+	getA AP; getB ACT_END                                        # A = AP, B = ACT_END
+	if_eq STORE_END                                              # all of ACTIVE is copied
+	getAat AP; putAat FREE                                       # memory[FREE] = memory[AP]
+	inc FREE                                                     # FREE = FREE + 1
+	inc AP                                                       # AP = AP + 1
+	goto STORE_NEXT
+@ STORE_END
+	getA END_MARK; putAat FREE                                   # memory[FREE] = 0xFFFF
+	inc FREE                                                     # FREE = FREE + 1
+	goto SWEEP_ROW
+@ SWEEP_DONE
+
+# ==== the loop's own lines ====
+#     for P = first tile; P != PEND; P = P + 4:
+#         Q = P + 4; if Q == PEND: Q = first tile
+#         EVALUATE(P, Q)
+	copy POINTS P                                                # P = the first tile
+@ LINE_NEXT
+	getA P; getB PEND                                            # A = P, B = PEND
+	if_eq LINES_DONE                                             # every tile has been P
+	lib 4; sum; putA Q                                           # Q = P + 4, the tile after P
+	getB PEND                                                    # B = PEND (A still holds Q)
+	if_neq LINE_EVALUATE
+	copy POINTS Q                                                # after the last tile comes the first
+@ LINE_EVALUATE
+	do EVALUATE
+	getA P; lib 4; sum; putA P                                   # P = P + 4
+	goto LINE_NEXT
+@ LINES_DONE
+
+# ==== WALK: every tile as the lower corner ====
+#     for P = first tile; P != PEND; P = P + 4:
+#         XRP = XR of P; LEVEL = YR of P; LO = 0; HI = 0xFFFF
+#         loop:
+#             FP = memory[SL_BASE + LEVEL]                  # the stretches of the band above row LEVEL
+#             loop:
+#                 A0 = memory[FP]; if A0 == 0xFFFF or A0 > XRP: goto WALK_NEXT_P     # no stretch holds XRP
+#                 A1 = memory[FP + 1]; if A1 >= XRP: break
+#                 FP = FP + 2
+#             if A0 > LO: LO = A0
+#             if A1 < HI: HI = A1
+#             LEVEL = LEVEL + 1
+#             for QP = LEVEL_START[LEVEL]; QP != LEVEL_START[LEVEL + 1]; QP = QP + 1:
+#                 Q = memory[QP]; if LO <= XR of Q <= HI: EVALUATE(P, Q)
+	copy POINTS P                                                # P = the first tile
+@ WALK_P
+	getA P; getB PEND                                            # A = P, B = PEND
+	if_eq WRITE_BEST                                             # every tile has been the lower corner
+	getA P; getB TO_XR; sum; load rgA rgA; putA XRP              # XRP = the XR of the tile
+	getA P; getB TO_YR; sum; load rgA rgA; putA LEVEL            # LEVEL = the YR of P
+	lia 0; putA LO                                               # LO = 0
+	copy END_MARK HI                                             # HI = 0xFFFF
+@ WALK_BAND
+	getA LEVEL; getB SL_BASE; sum; load rgA rgA; putA FP         # FP = the first stretch of the band above row LEVEL
+@ WALK_FIND
+	getAat FP; putA A0                                           # A0 = the left end of the stretch
+	getB END_MARK                                                # B = 0xFFFF (A still holds A0)
+	if_eq WALK_NEXT_P                                            # no stretch is left: P is not inside this band
+	getA XRP; getB A0; sub                                       # A = XRP - A0
+	if_carry WALK_RIGHT_END                                      # A0 <= XRP
+	goto WALK_NEXT_P                                             # this stretch and all later ones begin right of P
+@ WALK_RIGHT_END
+	getAoff FP 1; putA A1                                        # A1 = the right end of the stretch
+	getB XRP; sub                                                # A = A1 - XRP
+	if_carry WALK_INSIDE                                         # XRP <= A1: this is the stretch
+	getA FP; lib 2; sum; putA FP                                 # FP = FP + 2, the next stretch
+	goto WALK_FIND
+@ WALK_INSIDE
+	getA LO; getB A0; sub                                        # A = LO - A0
+	if_carry WALK_LO_KEPT                                        # LO >= A0
+	copy A0 LO                                                   # LO = A0
+@ WALK_LO_KEPT
+	getA A1; getB HI; sub                                        # A = A1 - HI
+	if_carry WALK_HI_KEPT                                        # A1 >= HI
+	copy A1 HI                                                   # HI = A1
+@ WALK_HI_KEPT
+	inc LEVEL                                                    # LEVEL = LEVEL + 1: the row above the band
+	getB LS_BASE; sum; putA ADR                                  # ADR = the address of LEVEL_START[LEVEL] (A still holds LEVEL)
+	getAat ADR; putA QP                                          # QP = the first tile of that row in BY_Y
+	getAoff ADR 1; putA Q_END                                    # Q_END = where the next row begins
+@ WALK_Q
+	getA QP; getB Q_END                                          # A = QP, B = Q_END
+	if_eq WALK_BAND                                              # the row is done: on to the band above it
+	getAat QP; putA Q                                            # Q = the tile at QP
+	getA Q; getB TO_XR; sum; load rgA rgA; putA XRQ              # XRQ = the XR of the tile
+	getB LO; sub                                                 # A = XRQ - LO (A still holds XRQ)
+	if_carry WALK_Q_RIGHT                                        # XRQ >= LO
+	goto WALK_Q_NEXT
+@ WALK_Q_RIGHT
+	getA HI; getB XRQ; sub                                       # A = HI - XRQ
+	if_carry WALK_Q_GOOD                                         # XRQ <= HI
+	goto WALK_Q_NEXT
+@ WALK_Q_GOOD
+	do EVALUATE                                                  # the rectangle of P and Q is inside the loop
+@ WALK_Q_NEXT
+	inc QP                                                       # QP = QP + 1
+	goto WALK_Q
+@ WALK_NEXT_P
+	getA P; lib 4; sum; putA P                                   # P = P + 4, the next tile
+	goto WALK_P
+
+# ==== write BEST as 15 decimal digits ====
+# A digit is how often a power of ten fits into what is left. Without division that is counting.
+# X is what is left of the total, Y the power of ten:
+#     X = BEST
+#     for Y in 10^14, 10^13, ..., 10, 1:                # the table ends at a number whose lowest word is 0
+#         DIGIT_VALUE = 0
+#         loop:
+#             SUBTRACT                                  # DIFF = X - Y, CARRY = 1 when X >= Y
+#             if CARRY == 0: break
+#             X = DIFF; DIGIT_VALUE = DIGIT_VALUE + 1
+#         memory[DIGIT] = DIGIT_VALUE; DIGIT = DIGIT + 1
+# (The lowest word of a power of ten up to 10^15 is never 0, so a 0 there can end the table.)
+@ WRITE_BEST
+	copy BEST0 X0                                               # X = BEST; word 0 (the lowest)
+	copy BEST1 X1                                               # word 1
+	copy BEST2 X2                                               # word 2
+	copy BEST3 X3                                               # word 3 (the top)
+@ NEXT_POWER
+	getAat POW                                                   # A = the lowest word of the next power of ten
+	lib 0                                                        # B = 0
+	if_eq END                                                    # a lowest word of 0 ends the table
+	putA Y0                                                      # Y = the power of ten; word 0 (the lowest)
+	getAoff POW 1; putA Y1                                       # word 1
+	getAoff POW 2; putA Y2                                       # word 2
+	getAoff POW 3; putA Y3                                       # word 3 (the top)
+	getA POW; lib 4; sum; putA POW                               # POW = POW + 4
+	lia 0; putA DIGIT_VALUE                                      # DIGIT_VALUE = 0
+@ FITS_AGAIN
+	do SUBTRACT                                                  # DIFF = X - Y, CARRY = 1 when X >= Y
+	getA CARRY; lib 0                                            # A = CARRY, B = 0
+	if_eq WRITE_DIGIT                                            # X < Y: the power does not fit again
+	copy DIFF0 X0                                                # X = DIFF; word 0 (the lowest)
+	copy DIFF1 X1                                                # word 1
+	copy DIFF2 X2                                                # word 2
+	copy DIFF3 X3                                                # word 3 (the top)
+	inc DIGIT_VALUE                                              # DIGIT_VALUE = DIGIT_VALUE + 1
+	goto FITS_AGAIN
+@ WRITE_DIGIT
+	getA DIGIT_VALUE; putAat DIGIT                               # memory[DIGIT] = DIGIT_VALUE
+	inc DIGIT                                                    # DIGIT = DIGIT + 1
+	goto NEXT_POWER
+
+# The word 0 stops the CPU on its Breakpoint.
+@ END
+	non
+
+# ---- Subroutines ----
+origin 0x1800
+# SORT: sort the list by its keys, smallest first (a Shell sort).
+# An insertion sort moves each word left past the words with a larger key, one place at a time. A Shell
+# sort does the same with a GAP: first words 1093 places apart are put in order, then 364, 121, 40, 13,
+# 4, and at last 1, when nothing has far to go any more.
+#     for GAP in 1093, 364, 121, 40, 13, 4, 1:              # from the table GAPS, which ends in 0
+#         for IP = LIST_BASE + GAP; IP < LIST_END; IP = IP + 1:
+#             MOVED = memory[IP]; KEY = key(MOVED)
+#             JP = IP
+#             loop:
+#                 GP = JP - GAP
+#                 if GP < LIST_BASE: break
+#                 OTHER = memory[GP]
+#                 if key(OTHER) <= KEY: break
+#                 memory[JP] = OTHER; JP = GP               # OTHER moves GAP places to the right
+#             memory[JP] = MOVED
+@ SORT
+	copy GAPS GAPP                                               # GAPP = the first gap of the table
+@ SORT_NEXT_GAP
+	getAat GAPP; putA GAP                                        # GAP = the next gap of the table
+	lib 0                                                        # B = 0
+	if_eq SORT_DONE                                              # the 0 that ends the table
+	inc GAPP                                                     # GAPP = GAPP + 1
+	getA LIST_BASE; getB GAP; sum; putA IP                       # IP = LIST_BASE + GAP
+@ SORT_NEXT_WORD
+	getA IP; getB LIST_END; sub                                  # A = IP - LIST_END
+	if_carry SORT_NEXT_GAP                                       # IP >= LIST_END: this gap is done
+	getAat IP; putA MOVED                                        # MOVED = memory[IP]
+	getA MOVED; getB KEYOFF; sum; putA ADR                       # ADR = the address of the tile's key
+	getAat ADR; putA KEY                                         # KEY = the key; lower word
+	getAoff ADR 1; putA KEY_H                                    # upper word
+	copy IP JP                                                   # JP = IP
+@ SORT_LEFT
+	getA JP; getB GAP; sub; putA GP                              # GP = JP - GAP
+	getB LIST_BASE; sub                                          # A = GP - LIST_BASE
+	if_carry SORT_COMPARE                                        # GP >= LIST_BASE: there is a word GAP places to the left
+	goto SORT_PLACE
+@ SORT_COMPARE
+	getAat GP; putA OTHER                                        # OTHER = memory[GP]
+	getA OTHER; getB KEYOFF; sum; putA ADR                       # ADR = the address of the tile's key
+	getAat ADR; putA OTHER_KEY                                   # OTHER_KEY = the key; lower word
+	getAoff ADR 1; putA OTHER_KEY_H                              # upper word
+	get32AB KEY OTHER_KEY; sub                                   # A = KEY - key(OTHER)
+	if_carry SORT_PLACE                                          # key(OTHER) <= KEY: MOVED belongs at JP
+	getA OTHER; putAat JP                                        # memory[JP] = OTHER
+	copy GP JP                                                   # JP = GP
+	goto SORT_LEFT
+@ SORT_PLACE
+	getA MOVED; putAat JP                                        # memory[JP] = MOVED
+	inc IP                                                       # IP = IP + 1
+	goto SORT_NEXT_WORD
+@ SORT_DONE
+	ret
+
+# RANK: give every tile of the sorted list the rank of its key: 0 for the smallest key, the same rank for
+# the same key. LEVEL_START[r] gets the address in the list where rank r begins, and after the last
+# rank the address after the list.
+#     RANKV = 0; OTHER_KEY = key of the first tile; LSP = LS_BASE; memory[LSP] = LIST_BASE; LSP = LSP + 1
+#     for IP = LIST_BASE; IP != LIST_END; IP = IP + 1:
+#         MOVED = memory[IP]; KEY = key(MOVED)
+#         if KEY != OTHER_KEY: RANKV = RANKV + 1; OTHER_KEY = KEY; memory[LSP] = IP; LSP = LSP + 1
+#         memory[MOVED + RANKOFF] = RANKV
+#     memory[LSP] = LIST_END
+@ RANK
+	lia 0; putA RANKV                                            # RANKV = 0
+	getAat LIST_BASE; putA MOVED                                 # MOVED = the first tile of the list
+	getA MOVED; getB KEYOFF; sum; putA ADR                       # ADR = the address of the tile's key
+	getAat ADR; putA OTHER_KEY                                   # OTHER_KEY = the key; lower word
+	getAoff ADR 1; putA OTHER_KEY_H                              # upper word
+	copy LS_BASE LSP                                             # LSP = the first word of LEVEL_START
+	getA LIST_BASE; putAat LSP; inc LSP                          # rank 0 begins at the start of the list
+	copy LIST_BASE IP                                            # IP = the first place of the list
+@ RANK_NEXT
+	getA IP; getB LIST_END                                       # A = IP, B = LIST_END
+	if_eq RANK_DONE                                              # every tile has its rank
+	getAat IP; putA MOVED                                        # MOVED = memory[IP]
+	getA MOVED; getB KEYOFF; sum; putA ADR                       # ADR = the address of the tile's key
+	getAat ADR; putA KEY                                         # KEY = the key; lower word
+	getAoff ADR 1; putA KEY_H                                    # upper word
+	get32AB KEY OTHER_KEY                                        # A = KEY, B = the key before
+	if_eq RANK_SAME                                              # the same key: the same rank
+	inc RANKV                                                    # RANKV = RANKV + 1
+	copy KEY OTHER_KEY; copy KEY_H OTHER_KEY_H                   # OTHER_KEY = KEY
+	getA IP; putAat LSP; inc LSP                                 # the new rank begins here
+@ RANK_SAME
+	getA MOVED; getB RANKOFF; sum                                # A = the address of the tile's rank
+	getB RANKV; store rgB rgA                                    # the rank of the tile = RANKV
+	inc IP                                                       # IP = IP + 1
+	goto RANK_NEXT
+@ RANK_DONE
+	getA LIST_END; putAat LSP                                    # after the last rank: the address after the list
+	ret
+
+# EVALUATE: the rectangle with the tiles at P and Q as corners; BEST and R are raised when it is larger.
+#     W = |x(P) - x(Q)| + 1; H = |y(P) - y(Q)| + 1
+#     if W + H <= R: return
+#     MULTIPLY                                              # AREA = W * H
+#     if AREA <= BEST: return
+#     BEST = AREA; NEW_R
+@ EVALUATE
+	getAat P; putA XP                                            # XP = x(P); lower word
+	getAoff P 1; putA XP_H                                       # upper word
+	getAoff P 2; putA YP                                         # YP = y(P); lower word
+	getAoff P 3; putA YP_H                                       # upper word
+	getAat Q; putA XQ                                            # XQ = x(Q); lower word
+	getAoff Q 1; putA XQ_H                                       # upper word
+	getAoff Q 2; putA YQ                                         # YQ = y(Q); lower word
+	getAoff Q 3; putA YQ_H                                       # upper word
+	get32AB XQ XP; sub                                           # A = XQ - XP
+	if_carry WIDTH_POSITIVE                                      # it did not go below 0
+	neg; lib 1; sum                                              # below 0: A = -A (flip every bit, add 1)
+@ WIDTH_POSITIVE
+	lib 1; sum; put32A W                                         # W = |XQ - XP| + 1
+	get32AB YQ YP; sub                                           # A = YQ - YP
+	if_carry HEIGHT_POSITIVE                                     # it did not go below 0
+	neg; lib 1; sum                                              # below 0: A = -A
+@ HEIGHT_POSITIVE
+	lib 1; sum; put32A H                                         # H = |YQ - YP| + 1
+	get32AB W H; sum; put32A SPAN                                # SPAN = W + H
+	get32AB R SPAN; sub                                          # A = R - SPAN
+	if_carry EVALUATE_DONE                                       # W + H <= R: the area cannot beat BEST
+	do MULTIPLY                                                  # AREA = W * H
+	copy BEST0 X0; copy BEST1 X1                                 # X = BEST; words 0 and 1
+	copy BEST2 X2; copy BEST3 X3                                 # words 2 and 3
+	copy AREA0 Y0; copy AREA1 Y1                                 # Y = AREA; words 0 and 1
+	copy AREA2 Y2; copy AREA3 Y3                                 # words 2 and 3
+	do SUBTRACT                                                  # CARRY = 1 when BEST >= AREA
+	getA CARRY; lib 0                                            # A = CARRY, B = 0
+	if_neq EVALUATE_DONE                                         # AREA is not larger than BEST
+	copy AREA0 BEST0; copy AREA1 BEST1                           # BEST = AREA; words 0 and 1
+	copy AREA2 BEST2; copy AREA3 BEST3                           # words 2 and 3
+	do NEW_R                                                     # R = the largest number with R * R <= 4 * BEST
+@ EVALUATE_DONE
+	ret
+
+# MULTIPLY: AREA = W * H. As on paper, in binary: H is a sum of powers of two, and W * H is the sum of
+# W * (those powers).
+#     AREA = 0; DOUBLED4 = W; MBIT = 1
+#     while MBIT <= H:
+#         if (H and MBIT) != 0: AREA = AREA + DOUBLED4
+#         DOUBLED4 = DOUBLED4 + DOUBLED4                    # DOUBLED4 is W * MBIT
+#         MBIT = MBIT * 2
+@ MULTIPLY
+	lia 0; putA AREA0; putA AREA1; putA AREA2; putA AREA3        # AREA = 0, all four words
+	putA DOUBLED42; putA DOUBLED43; putA MBIT_H                  # the upper words of DOUBLED4 and MBIT = 0 (A still holds 0)
+	copy W DOUBLED40; copy W_H DOUBLED41                         # DOUBLED4 = W
+	lia 1; putA MBIT                                             # MBIT = 1
+@ MULTIPLY_ROUND
+	get32AB H MBIT; sub                                          # A = H - MBIT
+	if_carry MULTIPLY_BIT                                        # H >= MBIT: there may be more to add
+	ret
+@ MULTIPLY_BIT
+	get32AB H MBIT; and                                          # A = H and MBIT
+	lib 0                                                        # B = 0
+	if_eq MULTIPLY_DOUBLE                                        # H does not have this power of two
+	lia 0; putA CARRY                                            # CARRY = 0
+	getA AREA0; getB DOUBLED40; sum; getB CARRY; sum; putA AREA0; keepcarry CARRY # AREA = AREA + DOUBLED4; word 0: AREA0 = AREA0 + DOUBLED40 + carry
+	getA AREA1; getB DOUBLED41; sum; getB CARRY; sum; putA AREA1; keepcarry CARRY # word 1
+	getA AREA2; getB DOUBLED42; sum; getB CARRY; sum; putA AREA2; keepcarry CARRY # word 2
+	getA AREA3; getB DOUBLED43; sum; getB CARRY; sum; putA AREA3 # word 3 (the top)
+@ MULTIPLY_DOUBLE
+	lia 0; putA CARRY                                            # CARRY = 0
+	getA DOUBLED40; getB DOUBLED40; sum; getB CARRY; sum; putA DOUBLED40; keepcarry CARRY # DOUBLED4 = DOUBLED4 + DOUBLED4; word 0: DOUBLED40 = DOUBLED40 + DOUBLED40 + carry
+	getA DOUBLED41; getB DOUBLED41; sum; getB CARRY; sum; putA DOUBLED41; keepcarry CARRY # word 1
+	getA DOUBLED42; getB DOUBLED42; sum; getB CARRY; sum; putA DOUBLED42; keepcarry CARRY # word 2
+	getA DOUBLED43; getB DOUBLED43; sum; getB CARRY; sum; putA DOUBLED43 # word 3 (the top)
+	get32A MBIT; shf | 1; put32A MBIT                            # MBIT = MBIT * 2
+	goto MULTIPLY_ROUND
+
+# NEW_R: R = the largest number with R * R <= 4 * BEST, built bit by bit from the top bit down.
+#     FOUR = BEST + BEST; FOUR = FOUR + FOUR
+#     R = 0
+#     for STEP in 2^20, 2^19, ..., 2, 1:                    # from the table BITS, which ends in 0
+#         TRY_R = R + STEP
+#         W = H = TRY_R; MULTIPLY                           # AREA = TRY_R * TRY_R
+#         if AREA <= FOUR: R = TRY_R
+# (W, H and AREA are free for this: EVALUATE is done with them.)
+@ NEW_R
+	lia 0; putA CARRY                                            # CARRY = 0
+	getA BEST0; getB BEST0; sum; getB CARRY; sum; putA FOUR0; keepcarry CARRY # FOUR = BEST + BEST; word 0: FOUR0 = BEST0 + BEST0 + carry
+	getA BEST1; getB BEST1; sum; getB CARRY; sum; putA FOUR1; keepcarry CARRY # word 1
+	getA BEST2; getB BEST2; sum; getB CARRY; sum; putA FOUR2; keepcarry CARRY # word 2
+	getA BEST3; getB BEST3; sum; getB CARRY; sum; putA FOUR3     # word 3 (the top)
+	lia 0; putA CARRY                                            # CARRY = 0
+	getA FOUR0; getB FOUR0; sum; getB CARRY; sum; putA FOUR0; keepcarry CARRY # FOUR = FOUR + FOUR; word 0: FOUR0 = FOUR0 + FOUR0 + carry
+	getA FOUR1; getB FOUR1; sum; getB CARRY; sum; putA FOUR1; keepcarry CARRY # word 1
+	getA FOUR2; getB FOUR2; sum; getB CARRY; sum; putA FOUR2; keepcarry CARRY # word 2
+	getA FOUR3; getB FOUR3; sum; getB CARRY; sum; putA FOUR3     # word 3 (the top)
+	lia 0; putA R; putA R_H                                      # R = 0
+	copy BITS BP                                                 # BP = the first power of two of the table
+@ NEW_R_STEP
+	getAat BP; putA STEP                                         # STEP = the next power of two; lower word
+	getAoff BP 1; putA STEP_H                                    # upper word
+	get32A STEP; lib 0                                           # A = STEP, B = 0
+	if_eq NEW_R_DONE                                             # the 0 that ends the table
+	getA BP; lib 2; sum; putA BP                                 # BP = BP + 2
+	get32AB R STEP; sum; put32A TRY_R                            # TRY_R = R + STEP
+	copy TRY_R W; copy TRY_R_H W_H                               # W = TRY_R
+	copy TRY_R H; copy TRY_R_H H_H                               # H = TRY_R
+	do MULTIPLY                                                  # AREA = TRY_R * TRY_R
+	copy FOUR0 X0; copy FOUR1 X1                                 # X = FOUR; words 0 and 1
+	copy FOUR2 X2; copy FOUR3 X3                                 # words 2 and 3
+	copy AREA0 Y0; copy AREA1 Y1                                 # Y = AREA; words 0 and 1
+	copy AREA2 Y2; copy AREA3 Y3                                 # words 2 and 3
+	do SUBTRACT                                                  # CARRY = 1 when FOUR >= AREA
+	getA CARRY; lib 0                                            # A = CARRY, B = 0
+	if_eq NEW_R_STEP                                             # TRY_R * TRY_R is above 4 * BEST: the bit does not stay
+	copy TRY_R R; copy TRY_R_H R_H                               # R = TRY_R
+	goto NEW_R_STEP
+@ NEW_R_DONE
+	ret
+
+# SUBTRACT: DIFF = X - Y, and CARRY = 1 when X >= Y (0 when X < Y; DIFF is then of no use).
+# Done as X + (Y with every bit flipped) + 1, word by word from the lowest:
+#     CARRY = 1                                         # the "+ 1"
+#     for k in 0, 1, 2, 3:
+#         A = (0xFFFF - Yk) + Xk + CARRY                # at most 0x1FFFF
+#         DIFFk = the lower half of A; CARRY = the upper half of A
+# X and Y are left as they were.
+@ SUBTRACT
+	lia 1; putA CARRY                                            # CARRY = 1
+	getA ALL_ONES; getB Y0; sub; getB X0; sum; getB CARRY; sum; putA DIFF0; keepcarry CARRY # word 0: DIFF0 = (0xFFFF - Y0) + X0 + carry
+	getA ALL_ONES; getB Y1; sub; getB X1; sum; getB CARRY; sum; putA DIFF1; keepcarry CARRY # word 1
+	getA ALL_ONES; getB Y2; sub; getB X2; sum; getB CARRY; sum; putA DIFF2; keepcarry CARRY # word 2
+	getA ALL_ONES; getB Y3; sub; getB X3; sum; getB CARRY; sum; putA DIFF3; keepcarry CARRY # word 3: its carry is 1 when X >= Y
+	ret
+
+# ---- Powers of ten for the decimal digits: 10^14 down to 1, four words each, lowest first; then 0 ----
+origin 0x1E00
+0x4000; 0x107A; 0x5AF3; 0x0000    # 100000000000000
+0xA000; 0x4E72; 0x0918; 0x0000    # 10000000000000
+0x1000; 0xD4A5; 0x00E8; 0x0000    # 1000000000000
+0xE800; 0x4876; 0x0017; 0x0000    # 100000000000
+0xE400; 0x540B; 0x0002; 0x0000    # 10000000000
+0xCA00; 0x3B9A; 0x0000; 0x0000    # 1000000000
+0xE100; 0x05F5; 0x0000; 0x0000    # 100000000
+0x9680; 0x0098; 0x0000; 0x0000    # 10000000
+0x4240; 0x000F; 0x0000; 0x0000    # 1000000
+0x86A0; 0x0001; 0x0000; 0x0000    # 100000
+0x2710; 0x0000; 0x0000; 0x0000    # 10000
+0x03E8; 0x0000; 0x0000; 0x0000    # 1000
+0x0064; 0x0000; 0x0000; 0x0000    # 100
+0x000A; 0x0000; 0x0000; 0x0000    # 10
+0x0001; 0x0000; 0x0000; 0x0000    # 1
+0
+
+
+# ---- Powers of two for NEW_R: 2^20 down to 1, two words each, lower first; then 0, 0 ----
+origin 0x1E40
+0x0000; 0x0010    # 2^20
+0x0000; 0x0008    # 2^19
+0x0000; 0x0004    # 2^18
+0x0000; 0x0002    # 2^17
+0x0000; 0x0001    # 2^16
+0x8000; 0x0000    # 2^15
+0x4000; 0x0000    # 2^14
+0x2000; 0x0000    # 2^13
+0x1000; 0x0000    # 2^12
+0x0800; 0x0000    # 2^11
+0x0400; 0x0000    # 2^10
+0x0200; 0x0000    # 2^9
+0x0100; 0x0000    # 2^8
+0x0080; 0x0000    # 2^7
+0x0040; 0x0000    # 2^6
+0x0020; 0x0000    # 2^5
+0x0010; 0x0000    # 2^4
+0x0008; 0x0000    # 2^3
+0x0004; 0x0000    # 2^2
+0x0002; 0x0000    # 2^1
+0x0001; 0x0000    # 2^0
+0; 0
+
+# ---- The gaps of the sort, then 0 ----
+origin 0x1E80
+1093; 364; 121; 40; 13; 4; 1; 0
+
+# ---- The red tiles: 496, then the end mark ----
+# Four words per tile: X, then Y, each lower word first.
+origin 0x2000
+0x7D4F; 0x0001; 0xC4B7; 0x0000    # 97615,50359
+0x7D4F; 0x0001; 0xC976; 0x0000    # 97615,51574
+0x7E58; 0x0001; 0xC976; 0x0000    # 97880,51574
+0x7E58; 0x0001; 0xCE33; 0x0000    # 97880,52787
+0x7E28; 0x0001; 0xCE33; 0x0000    # 97832,52787
+0x7E28; 0x0001; 0xD31D; 0x0000    # 97832,54045
+0x8004; 0x0001; 0xD31D; 0x0000    # 98308,54045
+0x8004; 0x0001; 0xD793; 0x0000    # 98308,55187
+0x7CAF; 0x0001; 0xD793; 0x0000    # 97455,55187
+0x7CAF; 0x0001; 0xDC6C; 0x0000    # 97455,56428
+0x7D48; 0x0001; 0xDC6C; 0x0000    # 97608,56428
+0x7D48; 0x0001; 0xE0E9; 0x0000    # 97608,57577
+0x7B3E; 0x0001; 0xE0E9; 0x0000    # 97086,57577
+0x7B3E; 0x0001; 0xE5B0; 0x0000    # 97086,58800
+0x7B1E; 0x0001; 0xE5B0; 0x0000    # 97054,58800
+0x7B1E; 0x0001; 0xEA98; 0x0000    # 97054,60056
+0x7B68; 0x0001; 0xEA98; 0x0000    # 97128,60056
+0x7B68; 0x0001; 0xEF63; 0x0000    # 97128,61283
+0x7AF3; 0x0001; 0xEF63; 0x0000    # 97011,61283
+0x7AF3; 0x0001; 0xF398; 0x0000    # 97011,62360
+0x7827; 0x0001; 0xF398; 0x0000    # 96295,62360
+0x7827; 0x0001; 0xF7F2; 0x0000    # 96295,63474
+0x7624; 0x0001; 0xF7F2; 0x0000    # 95780,63474
+0x7624; 0x0001; 0xFCCE; 0x0000    # 95780,64718
+0x75D6; 0x0001; 0xFCCE; 0x0000    # 95702,64718
+0x75D6; 0x0001; 0x00DE; 0x0001    # 95702,65758
+0x730E; 0x0001; 0x00DE; 0x0001    # 94990,65758
+0x730E; 0x0001; 0x0620; 0x0001    # 94990,67104
+0x739D; 0x0001; 0x0620; 0x0001    # 95133,67104
+0x739D; 0x0001; 0x0A97; 0x0001    # 95133,68247
+0x71EB; 0x0001; 0x0A97; 0x0001    # 94699,68247
+0x71EB; 0x0001; 0x0E78; 0x0001    # 94699,69240
+0x6EDD; 0x0001; 0x0E78; 0x0001    # 93917,69240
+0x6EDD; 0x0001; 0x12F1; 0x0001    # 93917,70385
+0x6D3B; 0x0001; 0x12F1; 0x0001    # 93499,70385
+0x6D3B; 0x0001; 0x179D; 0x0001    # 93499,71581
+0x6BF2; 0x0001; 0x179D; 0x0001    # 93170,71581
+0x6BF2; 0x0001; 0x1C0D; 0x0001    # 93170,72717
+0x6A1E; 0x0001; 0x1C0D; 0x0001    # 92702,72717
+0x6A1E; 0x0001; 0x1F1E; 0x0001    # 92702,73502
+0x65D1; 0x0001; 0x1F1E; 0x0001    # 91601,73502
+0x65D1; 0x0001; 0x23F9; 0x0001    # 91601,74745
+0x64B7; 0x0001; 0x23F9; 0x0001    # 91319,74745
+0x64B7; 0x0001; 0x2819; 0x0001    # 91319,75801
+0x6252; 0x0001; 0x2819; 0x0001    # 90706,75801
+0x6252; 0x0001; 0x2B53; 0x0001    # 90706,76627
+0x5E91; 0x0001; 0x2B53; 0x0001    # 89745,76627
+0x5E91; 0x0001; 0x3089; 0x0001    # 89745,77961
+0x5DBE; 0x0001; 0x3089; 0x0001    # 89534,77961
+0x5DBE; 0x0001; 0x33DC; 0x0001    # 89534,78812
+0x5A2E; 0x0001; 0x33DC; 0x0001    # 88622,78812
+0x5A2E; 0x0001; 0x3663; 0x0001    # 88622,79459
+0x55AE; 0x0001; 0x3663; 0x0001    # 87470,79459
+0x55AE; 0x0001; 0x39DD; 0x0001    # 87470,80349
+0x527C; 0x0001; 0x39DD; 0x0001    # 86652,80349
+0x527C; 0x0001; 0x3D91; 0x0001    # 86652,81297
+0x4F91; 0x0001; 0x3D91; 0x0001    # 85905,81297
+0x4F91; 0x0001; 0x41EA; 0x0001    # 85905,82410
+0x4D55; 0x0001; 0x41EA; 0x0001    # 85333,82410
+0x4D55; 0x0001; 0x46B9; 0x0001    # 85333,83641
+0x4B7B; 0x0001; 0x46B9; 0x0001    # 84859,83641
+0x4B7B; 0x0001; 0x4900; 0x0001    # 84859,84224
+0x4700; 0x0001; 0x4900; 0x0001    # 83712,84224
+0x4700; 0x0001; 0x4CBE; 0x0001    # 83712,85182
+0x43FD; 0x0001; 0x4CBE; 0x0001    # 82941,85182
+0x43FD; 0x0001; 0x4DF1; 0x0001    # 82941,85489
+0x3EAC; 0x0001; 0x4DF1; 0x0001    # 81580,85489
+0x3EAC; 0x0001; 0x5101; 0x0001    # 81580,86273
+0x3B1B; 0x0001; 0x5101; 0x0001    # 80667,86273
+0x3B1B; 0x0001; 0x566C; 0x0001    # 80667,87660
+0x396D; 0x0001; 0x566C; 0x0001    # 80237,87660
+0x396D; 0x0001; 0x5758; 0x0001    # 80237,87896
+0x341F; 0x0001; 0x5758; 0x0001    # 78879,87896
+0x341F; 0x0001; 0x5B1A; 0x0001    # 78879,88858
+0x3105; 0x0001; 0x5B1A; 0x0001    # 78085,88858
+0x3105; 0x0001; 0x5D4D; 0x0001    # 78085,89421
+0x2CC6; 0x0001; 0x5D4D; 0x0001    # 76998,89421
+0x2CC6; 0x0001; 0x6098; 0x0001    # 76998,90264
+0x2947; 0x0001; 0x6098; 0x0001    # 76103,90264
+0x2947; 0x0001; 0x62CF; 0x0001    # 76103,90831
+0x2510; 0x0001; 0x62CF; 0x0001    # 75024,90831
+0x2510; 0x0001; 0x657B; 0x0001    # 75024,91515
+0x2122; 0x0001; 0x657B; 0x0001    # 74018,91515
+0x2122; 0x0001; 0x691F; 0x0001    # 74018,92447
+0x1DB7; 0x0001; 0x691F; 0x0001    # 73143,92447
+0x1DB7; 0x0001; 0x6948; 0x0001    # 73143,92488
+0x186B; 0x0001; 0x6948; 0x0001    # 71787,92488
+0x186B; 0x0001; 0x6DFC; 0x0001    # 71787,93692
+0x1570; 0x0001; 0x6DFC; 0x0001    # 71024,93692
+0x1570; 0x0001; 0x6C80; 0x0001    # 71024,93312
+0x0F82; 0x0001; 0x6C80; 0x0001    # 69506,93312
+0x0F82; 0x0001; 0x708E; 0x0001    # 69506,94350
+0x0C1D; 0x0001; 0x708E; 0x0001    # 68637,94350
+0x0C1D; 0x0001; 0x710F; 0x0001    # 68637,94479
+0x0733; 0x0001; 0x710F; 0x0001    # 67379,94479
+0x0733; 0x0001; 0x73A8; 0x0001    # 67379,95144
+0x031D; 0x0001; 0x73A8; 0x0001    # 66333,95144
+0x031D; 0x0001; 0x74EF; 0x0001    # 66333,95471
+0xFE88; 0x0000; 0x74EF; 0x0001    # 65160,95471
+0xFE88; 0x0000; 0x7825; 0x0001    # 65160,96293
+0xFA8D; 0x0000; 0x7825; 0x0001    # 64141,96293
+0xFA8D; 0x0000; 0x77F3; 0x0001    # 64141,96243
+0xF587; 0x0000; 0x77F3; 0x0001    # 62855,96243
+0xF587; 0x0000; 0x7944; 0x0001    # 62855,96580
+0xF0F6; 0x0000; 0x7944; 0x0001    # 61686,96580
+0xF0F6; 0x0000; 0x7AF2; 0x0001    # 61686,97010
+0xEC77; 0x0000; 0x7AF2; 0x0001    # 60535,97010
+0xEC77; 0x0000; 0x7C6E; 0x0001    # 60535,97390
+0xE7E6; 0x0000; 0x7C6E; 0x0001    # 59366,97390
+0xE7E6; 0x0000; 0x7AD9; 0x0001    # 59366,96985
+0xE2C7; 0x0000; 0x7AD9; 0x0001    # 58055,96985
+0xE2C7; 0x0000; 0x7B65; 0x0001    # 58055,97125
+0xDE17; 0x0000; 0x7B65; 0x0001    # 56855,97125
+0xDE17; 0x0000; 0x7BFD; 0x0001    # 56855,97277
+0xD96B; 0x0000; 0x7BFD; 0x0001    # 55659,97277
+0xD96B; 0x0000; 0x7D39; 0x0001    # 55659,97593
+0xD4CD; 0x0000; 0x7D39; 0x0001    # 54477,97593
+0xD4CD; 0x0000; 0x7C84; 0x0001    # 54477,97412
+0xD002; 0x0000; 0x7C84; 0x0001    # 53250,97412
+0xD002; 0x0000; 0x7F8C; 0x0001    # 53250,98188
+0xCB6F; 0x0000; 0x7F8C; 0x0001    # 52079,98188
+0xCB6F; 0x0000; 0x7E3A; 0x0001    # 52079,97850
+0xC6A3; 0x0000; 0x7E3A; 0x0001    # 50851,97850
+0xC6A3; 0x0000; 0x7D37; 0x0001    # 50851,97591
+0xC1E8; 0x0000; 0x7D37; 0x0001    # 49640,97591
+0xC1E8; 0x0000; 0x7D4D; 0x0001    # 49640,97613
+0xBD31; 0x0000; 0x7D4D; 0x0001    # 48433,97613
+0xBD31; 0x0000; 0x7CC6; 0x0001    # 48433,97478
+0xB880; 0x0000; 0x7CC6; 0x0001    # 47232,97478
+0xB880; 0x0000; 0x7EA7; 0x0001    # 47232,97959
+0xB39F; 0x0000; 0x7EA7; 0x0001    # 45983,97959
+0xB39F; 0x0000; 0x7F4A; 0x0001    # 45983,98122
+0xAEC3; 0x0000; 0x7F4A; 0x0001    # 44739,98122
+0xAEC3; 0x0000; 0x7E6D; 0x0001    # 44739,97901
+0xAA0B; 0x0000; 0x7E6D; 0x0001    # 43531,97901
+0xAA0B; 0x0000; 0x7DDE; 0x0001    # 43531,97758
+0xA54A; 0x0000; 0x7DDE; 0x0001    # 42314,97758
+0xA54A; 0x0000; 0x79CF; 0x0001    # 42314,96719
+0xA12E; 0x0000; 0x79CF; 0x0001    # 41262,96719
+0xA12E; 0x0000; 0x7BD0; 0x0001    # 41262,97232
+0x9BF1; 0x0000; 0x7BD0; 0x0001    # 39921,97232
+0x9BF1; 0x0000; 0x79CF; 0x0001    # 39921,96719
+0x9782; 0x0000; 0x79CF; 0x0001    # 38786,96719
+0x9782; 0x0000; 0x77E1; 0x0001    # 38786,96225
+0x931A; 0x0000; 0x77E1; 0x0001    # 37658,96225
+0x931A; 0x0000; 0x772D; 0x0001    # 37658,96045
+0x8E60; 0x0000; 0x772D; 0x0001    # 36448,96045
+0x8E60; 0x0000; 0x7606; 0x0001    # 36448,95750
+0x89C1; 0x0000; 0x7606; 0x0001    # 35265,95750
+0x89C1; 0x0000; 0x73D0; 0x0001    # 35265,95184
+0x857D; 0x0000; 0x73D0; 0x0001    # 34173,95184
+0x857D; 0x0000; 0x7430; 0x0001    # 34173,95280
+0x8048; 0x0000; 0x7430; 0x0001    # 32840,95280
+0x8048; 0x0000; 0x70E8; 0x0001    # 32840,94440
+0x7C72; 0x0000; 0x70E8; 0x0001    # 31858,94440
+0x7C72; 0x0000; 0x6E8E; 0x0001    # 31858,93838
+0x784A; 0x0000; 0x6E8E; 0x0001    # 30794,93838
+0x784A; 0x0000; 0x6BB9; 0x0001    # 30794,93113
+0x7463; 0x0000; 0x6BB9; 0x0001    # 29795,93113
+0x7463; 0x0000; 0x6C73; 0x0001    # 29795,93299
+0x6EC1; 0x0000; 0x6C73; 0x0001    # 28353,93299
+0x6EC1; 0x0000; 0x6820; 0x0001    # 28353,92192
+0x6BA1; 0x0000; 0x6820; 0x0001    # 27553,92192
+0x6BA1; 0x0000; 0x663E; 0x0001    # 27553,91710
+0x6743; 0x0000; 0x663E; 0x0001    # 26435,91710
+0x6743; 0x0000; 0x641D; 0x0001    # 26435,91165
+0x6303; 0x0000; 0x641D; 0x0001    # 25347,91165
+0x6303; 0x0000; 0x608D; 0x0001    # 25347,90253
+0x5FA5; 0x0000; 0x608D; 0x0001    # 24485,90253
+0x5FA5; 0x0000; 0x5F7A; 0x0001    # 24485,89978
+0x5AB1; 0x0000; 0x5F7A; 0x0001    # 23217,89978
+0x5AB1; 0x0000; 0x5B99; 0x0001    # 23217,88985
+0x579A; 0x0000; 0x5B99; 0x0001    # 22426,88985
+0x579A; 0x0000; 0x58F0; 0x0001    # 22426,88304
+0x53B1; 0x0000; 0x58F0; 0x0001    # 21425,88304
+0x53B1; 0x0000; 0x5596; 0x0001    # 21425,87446
+0x504F; 0x0000; 0x5596; 0x0001    # 20559,87446
+0x504F; 0x0000; 0x544A; 0x0001    # 20559,87114
+0x4B43; 0x0000; 0x544A; 0x0001    # 19267,87114
+0x4B43; 0x0000; 0x4FF6; 0x0001    # 19267,86006
+0x48B6; 0x0000; 0x4FF6; 0x0001    # 18614,86006
+0x48B6; 0x0000; 0x4D74; 0x0001    # 18614,85364
+0x4499; 0x0000; 0x4D74; 0x0001    # 17561,85364
+0x4499; 0x0000; 0x498D; 0x0001    # 17561,84365
+0x41C3; 0x0000; 0x498D; 0x0001    # 16835,84365
+0x41C3; 0x0000; 0x47A7; 0x0001    # 16835,83879
+0x3CF5; 0x0000; 0x47A7; 0x0001    # 15605,83879
+0x3CF5; 0x0000; 0x4335; 0x0001    # 15605,82741
+0x3AB7; 0x0000; 0x4335; 0x0001    # 15031,82741
+0x3AB7; 0x0000; 0x3FD5; 0x0001    # 15031,81877
+0x3760; 0x0000; 0x3FD5; 0x0001    # 14176,81877
+0x3760; 0x0000; 0x3CF3; 0x0001    # 14176,81139
+0x3370; 0x0000; 0x3CF3; 0x0001    # 13168,81139
+0x3370; 0x0000; 0x38FA; 0x0001    # 13168,80122
+0x30C2; 0x0000; 0x38FA; 0x0001    # 12482,80122
+0x30C2; 0x0000; 0x3604; 0x0001    # 12482,79364
+0x2CCA; 0x0000; 0x3604; 0x0001    # 11466,79364
+0x2CCA; 0x0000; 0x307E; 0x0001    # 11466,77950
+0x2C40; 0x0000; 0x307E; 0x0001    # 11328,77950
+0x2C40; 0x0000; 0x2DD5; 0x0001    # 11328,77269
+0x27C7; 0x0000; 0x2DD5; 0x0001    # 10183,77269
+0x27C7; 0x0000; 0x284A; 0x0001    # 10183,75850
+0x278C; 0x0000; 0x284A; 0x0001    # 10124,75850
+0x278C; 0x0000; 0x2607; 0x0001    # 10124,75271
+0x223D; 0x0000; 0x2607; 0x0001    # 8765,75271
+0x223D; 0x0000; 0x20A8; 0x0001    # 8765,73896
+0x21F7; 0x0000; 0x20A8; 0x0001    # 8695,73896
+0x21F7; 0x0000; 0x1D17; 0x0001    # 8695,72983
+0x1EA5; 0x0000; 0x1D17; 0x0001    # 7845,72983
+0x1EA5; 0x0000; 0x19BF; 0x0001    # 7845,72127
+0x1AC0; 0x0000; 0x19BF; 0x0001    # 6848,72127
+0x1AC0; 0x0000; 0x14C0; 0x0001    # 6848,70848
+0x1A11; 0x0000; 0x14C0; 0x0001    # 6673,70848
+0x1A11; 0x0000; 0x0FFF; 0x0001    # 6673,69631
+0x190A; 0x0000; 0x0FFF; 0x0001    # 6410,69631
+0x190A; 0x0000; 0x0C74; 0x0001    # 6410,68724
+0x1542; 0x0000; 0x0C74; 0x0001    # 5442,68724
+0x1542; 0x0000; 0x07DA; 0x0001    # 5442,67546
+0x13E3; 0x0000; 0x07DA; 0x0001    # 5091,67546
+0x13E3; 0x0000; 0x02B7; 0x0001    # 5091,66231
+0x1412; 0x0000; 0x02B7; 0x0001    # 5138,66231
+0x1412; 0x0000; 0xFEBA; 0x0000    # 5138,65210
+0x111A; 0x0000; 0xFEBA; 0x0000    # 4378,65210
+0x111A; 0x0000; 0xF9A2; 0x0000    # 4378,63906
+0x117C; 0x0000; 0xF9A2; 0x0000    # 4476,63906
+0x117C; 0x0000; 0xF53E; 0x0000    # 4476,62782
+0x0FB3; 0x0000; 0xF53E; 0x0000    # 4019,62782
+0x0FB3; 0x0000; 0xF098; 0x0000    # 4019,61592
+0x0ED1; 0x0000; 0xF098; 0x0000    # 3793,61592
+0x0ED1; 0x0000; 0xEC9C; 0x0000    # 3793,60572
+0x0B08; 0x0000; 0xEC9C; 0x0000    # 2824,60572
+0x0B08; 0x0000; 0xE77A; 0x0000    # 2824,59258
+0x0C54; 0x0000; 0xE77A; 0x0000    # 3156,59258
+0x0C54; 0x0000; 0xE2FD; 0x0000    # 3156,58109
+0x0A8E; 0x0000; 0xE2FD; 0x0000    # 2702,58109
+0x0A8E; 0x0000; 0xDE49; 0x0000    # 2702,56905
+0x09E7; 0x0000; 0xDE49; 0x0000    # 2535,56905
+0x09E7; 0x0000; 0xD9A7; 0x0000    # 2535,55719
+0x08AD; 0x0000; 0xD9A7; 0x0000    # 2221,55719
+0x08AD; 0x0000; 0xD4CB; 0x0000    # 2221,54475
+0x097B; 0x0000; 0xD4CB; 0x0000    # 2427,54475
+0x097B; 0x0000; 0xD036; 0x0000    # 2427,53302
+0x072D; 0x0000; 0xD036; 0x0000    # 1837,53302
+0x072D; 0x0000; 0xCB69; 0x0000    # 1837,52073
+0x0794; 0x0000; 0xCB69; 0x0000    # 1940,52073
+0x0794; 0x0000; 0xC6A8; 0x0000    # 1940,50856
+0x073F; 0x0000; 0xC6A8; 0x0000    # 1855,50856
+0x073F; 0x0000; 0xC4A2; 0x0000    # 1855,50338
+0x72C6; 0x0001; 0xC4A2; 0x0000    # 94918,50338
+0x72C6; 0x0001; 0xBD2E; 0x0000    # 94918,48430
+0x08F6; 0x0000; 0xBD2E; 0x0000    # 2294,48430
+0x08F6; 0x0000; 0xB86A; 0x0000    # 2294,47210
+0x0858; 0x0000; 0xB86A; 0x0000    # 2136,47210
+0x0858; 0x0000; 0xB396; 0x0000    # 2136,45974
+0x0788; 0x0000; 0xB396; 0x0000    # 1928,45974
+0x0788; 0x0000; 0xAF10; 0x0000    # 1928,44816
+0x0A17; 0x0000; 0xAF10; 0x0000    # 2583,44816
+0x0A17; 0x0000; 0xAA52; 0x0000    # 2583,43602
+0x0A3F; 0x0000; 0xAA52; 0x0000    # 2623,43602
+0x0A3F; 0x0000; 0xA5D4; 0x0000    # 2623,42452
+0x0C1C; 0x0000; 0xA5D4; 0x0000    # 3100,42452
+0x0C1C; 0x0000; 0xA12D; 0x0000    # 3100,41261
+0x0CCC; 0x0000; 0xA12D; 0x0000    # 3276,41261
+0x0CCC; 0x0000; 0x9C3D; 0x0000    # 3276,39997
+0x0C34; 0x0000; 0x9C3D; 0x0000    # 3124,39997
+0x0C34; 0x0000; 0x9737; 0x0000    # 3124,38711
+0x0B9A; 0x0000; 0x9737; 0x0000    # 2970,38711
+0x0B9A; 0x0000; 0x932B; 0x0000    # 2970,37675
+0x0EFF; 0x0000; 0x932B; 0x0000    # 3839,37675
+0x0EFF; 0x0000; 0x8ECE; 0x0000    # 3839,36558
+0x10E9; 0x0000; 0x8ECE; 0x0000    # 4329,36558
+0x10E9; 0x0000; 0x89FC; 0x0000    # 4329,35324
+0x114F; 0x0000; 0x89FC; 0x0000    # 4431,35324
+0x114F; 0x0000; 0x8581; 0x0000    # 4431,34177
+0x12D9; 0x0000; 0x8581; 0x0000    # 4825,34177
+0x12D9; 0x0000; 0x8077; 0x0000    # 4825,32887
+0x12EA; 0x0000; 0x8077; 0x0000    # 4842,32887
+0x12EA; 0x0000; 0x7C9F; 0x0000    # 4842,31903
+0x1625; 0x0000; 0x7C9F; 0x0000    # 5669,31903
+0x1625; 0x0000; 0x7839; 0x0000    # 5669,30777
+0x17EB; 0x0000; 0x7839; 0x0000    # 6123,30777
+0x17EB; 0x0000; 0x736A; 0x0000    # 6123,29546
+0x18D3; 0x0000; 0x736A; 0x0000    # 6355,29546
+0x18D3; 0x0000; 0x7054; 0x0000    # 6355,28756
+0x1D51; 0x0000; 0x7054; 0x0000    # 7505,28756
+0x1D51; 0x0000; 0x6A84; 0x0000    # 7505,27268
+0x1C67; 0x0000; 0x6A84; 0x0000    # 7271,27268
+0x1C67; 0x0000; 0x67E7; 0x0000    # 7271,26599
+0x2183; 0x0000; 0x67E7; 0x0000    # 8579,26599
+0x2183; 0x0000; 0x637F; 0x0000    # 8579,25471
+0x2352; 0x0000; 0x637F; 0x0000    # 9042,25471
+0x2352; 0x0000; 0x5F70; 0x0000    # 9042,24432
+0x25BE; 0x0000; 0x5F70; 0x0000    # 9662,24432
+0x25BE; 0x0000; 0x5BE4; 0x0000    # 9662,23524
+0x28F0; 0x0000; 0x5BE4; 0x0000    # 10480,23524
+0x28F0; 0x0000; 0x5745; 0x0000    # 10480,22341
+0x2A8E; 0x0000; 0x5745; 0x0000    # 10894,22341
+0x2A8E; 0x0000; 0x534B; 0x0000    # 10894,21323
+0x2D27; 0x0000; 0x534B; 0x0000    # 11559,21323
+0x2D27; 0x0000; 0x4F44; 0x0000    # 11559,20292
+0x2FB5; 0x0000; 0x4F44; 0x0000    # 12213,20292
+0x2FB5; 0x0000; 0x4B59; 0x0000    # 12213,19289
+0x326F; 0x0000; 0x4B59; 0x0000    # 12911,19289
+0x326F; 0x0000; 0x4770; 0x0000    # 12911,18288
+0x3533; 0x0000; 0x4770; 0x0000    # 13619,18288
+0x3533; 0x0000; 0x4360; 0x0000    # 13619,17248
+0x37D6; 0x0000; 0x4360; 0x0000    # 14294,17248
+0x37D6; 0x0000; 0x40F4; 0x0000    # 14294,16628
+0x3C3B; 0x0000; 0x40F4; 0x0000    # 15419,16628
+0x3C3B; 0x0000; 0x3EA7; 0x0000    # 15419,16039
+0x40A4; 0x0000; 0x3EA7; 0x0000    # 16548,16039
+0x40A4; 0x0000; 0x3B74; 0x0000    # 16548,15220
+0x441B; 0x0000; 0x3B74; 0x0000    # 17435,15220
+0x441B; 0x0000; 0x382F; 0x0000    # 17435,14383
+0x4782; 0x0000; 0x382F; 0x0000    # 18306,14383
+0x4782; 0x0000; 0x3568; 0x0000    # 18306,13672
+0x4B56; 0x0000; 0x3568; 0x0000    # 19286,13672
+0x4B56; 0x0000; 0x3055; 0x0000    # 19286,12373
+0x4D4D; 0x0000; 0x3055; 0x0000    # 19789,12373
+0x4D4D; 0x0000; 0x2F76; 0x0000    # 19789,12150
+0x52A4; 0x0000; 0x2F76; 0x0000    # 21156,12150
+0x52A4; 0x0000; 0x2B11; 0x0000    # 21156,11025
+0x5547; 0x0000; 0x2B11; 0x0000    # 21831,11025
+0x5547; 0x0000; 0x2928; 0x0000    # 21831,10536
+0x59BC; 0x0000; 0x2928; 0x0000    # 22972,10536
+0x59BC; 0x0000; 0x2735; 0x0000    # 22972,10037
+0x5E1C; 0x0000; 0x2735; 0x0000    # 24092,10037
+0x5E1C; 0x0000; 0x24D4; 0x0000    # 24092,9428
+0x622E; 0x0000; 0x24D4; 0x0000    # 25134,9428
+0x622E; 0x0000; 0x21FA; 0x0000    # 25134,8698
+0x65F8; 0x0000; 0x21FA; 0x0000    # 26104,8698
+0x65F8; 0x0000; 0x1FFC; 0x0000    # 26104,8188
+0x6A43; 0x0000; 0x1FFC; 0x0000    # 27203,8188
+0x6A43; 0x0000; 0x1B6F; 0x0000    # 27203,7023
+0x6D39; 0x0000; 0x1B6F; 0x0000    # 27961,7023
+0x6D39; 0x0000; 0x1987; 0x0000    # 27961,6535
+0x719D; 0x0000; 0x1987; 0x0000    # 29085,6535
+0x719D; 0x0000; 0x18C7; 0x0000    # 29085,6343
+0x7682; 0x0000; 0x18C7; 0x0000    # 30338,6343
+0x7682; 0x0000; 0x16D6; 0x0000    # 30338,5846
+0x7AD5; 0x0000; 0x16D6; 0x0000    # 31445,5846
+0x7AD5; 0x0000; 0x157A; 0x0000    # 31445,5498
+0x7F64; 0x0000; 0x157A; 0x0000    # 32612,5498
+0x7F64; 0x0000; 0x1304; 0x0000    # 32612,4868
+0x8387; 0x0000; 0x1304; 0x0000    # 33671,4868
+0x8387; 0x0000; 0x1290; 0x0000    # 33671,4752
+0x8862; 0x0000; 0x1290; 0x0000    # 34914,4752
+0x8862; 0x0000; 0x10CD; 0x0000    # 34914,4301
+0x8CC7; 0x0000; 0x10CD; 0x0000    # 36039,4301
+0x8CC7; 0x0000; 0x1080; 0x0000    # 36039,4224
+0x919A; 0x0000; 0x1080; 0x0000    # 37274,4224
+0x919A; 0x0000; 0x0F01; 0x0000    # 37274,3841
+0x9613; 0x0000; 0x0F01; 0x0000    # 38419,3841
+0x9613; 0x0000; 0x0B88; 0x0000    # 38419,2952
+0x9A1F; 0x0000; 0x0B88; 0x0000    # 39455,2952
+0x9A1F; 0x0000; 0x0BD5; 0x0000    # 39455,3029
+0x9F0C; 0x0000; 0x0BD5; 0x0000    # 40716,3029
+0x9F0C; 0x0000; 0x0B2A; 0x0000    # 40716,2858
+0xA3BD; 0x0000; 0x0B2A; 0x0000    # 41917,2858
+0xA3BD; 0x0000; 0x0806; 0x0000    # 41917,2054
+0xA810; 0x0000; 0x0806; 0x0000    # 43024,2054
+0xA810; 0x0000; 0x0794; 0x0000    # 43024,1940
+0xACD7; 0x0000; 0x0794; 0x0000    # 44247,1940
+0xACD7; 0x0000; 0x09B3; 0x0000    # 44247,2483
+0xB1DA; 0x0000; 0x09B3; 0x0000    # 45530,2483
+0xB1DA; 0x0000; 0x0760; 0x0000    # 45530,1888
+0xB66D; 0x0000; 0x0760; 0x0000    # 46701,1888
+0xB66D; 0x0000; 0x0922; 0x0000    # 46701,2338
+0xBB47; 0x0000; 0x0922; 0x0000    # 47943,2338
+0xBB47; 0x0000; 0x0626; 0x0000    # 47943,1574
+0xBFF2; 0x0000; 0x0626; 0x0000    # 49138,1574
+0xBFF2; 0x0000; 0x08C0; 0x0000    # 49138,2240
+0xC4B8; 0x0000; 0x08C0; 0x0000    # 50360,2240
+0xC4B8; 0x0000; 0x0889; 0x0000    # 50360,2185
+0xC974; 0x0000; 0x0889; 0x0000    # 51572,2185
+0xC974; 0x0000; 0x0660; 0x0000    # 51572,1632
+0xCE52; 0x0000; 0x0660; 0x0000    # 52818,1632
+0xCE52; 0x0000; 0x0696; 0x0000    # 52818,1686
+0xD31E; 0x0000; 0x0696; 0x0000    # 54046,1686
+0xD31E; 0x0000; 0x0A6E; 0x0000    # 54046,2670
+0xD786; 0x0000; 0x0A6E; 0x0000    # 55174,2670
+0xD786; 0x0000; 0x0832; 0x0000    # 55174,2098
+0xDC94; 0x0000; 0x0832; 0x0000    # 56468,2098
+0xDC94; 0x0000; 0x0BC0; 0x0000    # 56468,3008
+0xE0DA; 0x0000; 0x0BC0; 0x0000    # 57562,3008
+0xE0DA; 0x0000; 0x0AB1; 0x0000    # 57562,2737
+0xE5D7; 0x0000; 0x0AB1; 0x0000    # 58839,2737
+0xE5D7; 0x0000; 0x0A40; 0x0000    # 58839,2624
+0xEACC; 0x0000; 0x0A40; 0x0000    # 60108,2624
+0xEACC; 0x0000; 0x0BE7; 0x0000    # 60108,3047
+0xEF55; 0x0000; 0x0BE7; 0x0000    # 61269,3047
+0xEF55; 0x0000; 0x0C54; 0x0000    # 61269,3156
+0xF42A; 0x0000; 0x0C54; 0x0000    # 62506,3156
+0xF42A; 0x0000; 0x0EBD; 0x0000    # 62506,3773
+0xF875; 0x0000; 0x0EBD; 0x0000    # 63605,3773
+0xF875; 0x0000; 0x0F53; 0x0000    # 63605,3923
+0xFD47; 0x0000; 0x0F53; 0x0000    # 64839,3923
+0xFD47; 0x0000; 0x121A; 0x0000    # 64839,4634
+0x0161; 0x0001; 0x121A; 0x0000    # 65889,4634
+0x0161; 0x0001; 0x15AE; 0x0000    # 65889,5550
+0x051C; 0x0001; 0x15AE; 0x0000    # 66844,5550
+0x051C; 0x0001; 0x1403; 0x0000    # 66844,5123
+0x0ADF; 0x0001; 0x1403; 0x0000    # 68319,5123
+0x0ADF; 0x0001; 0x1890; 0x0000    # 68319,6288
+0x0E1E; 0x0001; 0x1890; 0x0000    # 69150,6288
+0x0E1E; 0x0001; 0x187D; 0x0000    # 69150,6269
+0x135E; 0x0001; 0x187D; 0x0000    # 70494,6269
+0x135E; 0x0001; 0x1C64; 0x0000    # 70494,7268
+0x16C2; 0x0001; 0x1C64; 0x0000    # 71362,7268
+0x16C2; 0x0001; 0x1DF9; 0x0000    # 71362,7673
+0x1B45; 0x0001; 0x1DF9; 0x0000    # 72517,7673
+0x1B45; 0x0001; 0x1F6A; 0x0000    # 72517,8042
+0x1FE8; 0x0001; 0x1F6A; 0x0000    # 73704,8042
+0x1FE8; 0x0001; 0x21FD; 0x0000    # 73704,8701
+0x23EC; 0x0001; 0x21FD; 0x0000    # 74732,8701
+0x23EC; 0x0001; 0x24C0; 0x0000    # 74732,9408
+0x27CF; 0x0001; 0x24C0; 0x0000    # 75727,9408
+0x27CF; 0x0001; 0x276F; 0x0000    # 75727,10095
+0x2BBD; 0x0001; 0x276F; 0x0000    # 76733,10095
+0x2BBD; 0x0001; 0x29E0; 0x0000    # 76733,10720
+0x2FD5; 0x0001; 0x29E0; 0x0000    # 77781,10720
+0x2FD5; 0x0001; 0x2CDB; 0x0000    # 77781,11483
+0x338D; 0x0001; 0x2CDB; 0x0000    # 78733,11483
+0x338D; 0x0001; 0x2F9F; 0x0000    # 78733,12191
+0x376D; 0x0001; 0x2F9F; 0x0000    # 79725,12191
+0x376D; 0x0001; 0x3370; 0x0000    # 79725,13168
+0x3A71; 0x0001; 0x3370; 0x0000    # 80497,13168
+0x3A71; 0x0001; 0x36A2; 0x0000    # 80497,13986
+0x3DEF; 0x0001; 0x36A2; 0x0000    # 81391,13986
+0x3DEF; 0x0001; 0x383B; 0x0000    # 81391,14395
+0x42E2; 0x0001; 0x383B; 0x0000    # 82658,14395
+0x42E2; 0x0001; 0x3CBE; 0x0000    # 82658,15550
+0x452D; 0x0001; 0x3CBE; 0x0000    # 83245,15550
+0x452D; 0x0001; 0x3E78; 0x0000    # 83245,15992
+0x4A2C; 0x0001; 0x3E78; 0x0000    # 84524,15992
+0x4A2C; 0x0001; 0x4291; 0x0000    # 84524,17041
+0x4CD0; 0x0001; 0x4291; 0x0000    # 85200,17041
+0x4CD0; 0x0001; 0x4680; 0x0000    # 85200,18048
+0x4F92; 0x0001; 0x4680; 0x0000    # 85906,18048
+0x4F92; 0x0001; 0x4A5B; 0x0000    # 85906,19035
+0x5260; 0x0001; 0x4A5B; 0x0000    # 86624,19035
+0x5260; 0x0001; 0x4DED; 0x0000    # 86624,19949
+0x5582; 0x0001; 0x4DED; 0x0000    # 87426,19949
+0x5582; 0x0001; 0x524F; 0x0000    # 87426,21071
+0x5798; 0x0001; 0x524F; 0x0000    # 87960,21071
+0x5798; 0x0001; 0x5568; 0x0000    # 87960,21864
+0x5B5F; 0x0001; 0x5568; 0x0000    # 88927,21864
+0x5B5F; 0x0001; 0x586A; 0x0000    # 88927,22634
+0x5F64; 0x0001; 0x586A; 0x0000    # 89956,22634
+0x5F64; 0x0001; 0x5E08; 0x0000    # 89956,24072
+0x5F8A; 0x0001; 0x5E08; 0x0000    # 89994,24072
+0x5F8A; 0x0001; 0x6132; 0x0000    # 89994,24882
+0x6367; 0x0001; 0x6132; 0x0000    # 90983,24882
+0x6367; 0x0001; 0x6542; 0x0000    # 90983,25922
+0x65E1; 0x0001; 0x6542; 0x0000    # 91617,25922
+0x65E1; 0x0001; 0x68E0; 0x0000    # 91617,26848
+0x692E; 0x0001; 0x68E0; 0x0000    # 92462,26848
+0x692E; 0x0001; 0x6E37; 0x0000    # 92462,28215
+0x6941; 0x0001; 0x6E37; 0x0000    # 92481,28215
+0x6941; 0x0001; 0x72A8; 0x0000    # 92481,29352
+0x6AEC; 0x0001; 0x72A8; 0x0000    # 92908,29352
+0x6AEC; 0x0001; 0x7678; 0x0000    # 92908,30328
+0x6DEE; 0x0001; 0x7678; 0x0000    # 93678,30328
+0x6DEE; 0x0001; 0x7A98; 0x0000    # 93678,31384
+0x705A; 0x0001; 0x7A98; 0x0000    # 94298,31384
+0x705A; 0x0001; 0x7F44; 0x0000    # 94298,32580
+0x7175; 0x0001; 0x7F44; 0x0000    # 94581,32580
+0x7175; 0x0001; 0x839B; 0x0000    # 94581,33691
+0x7362; 0x0001; 0x839B; 0x0000    # 95074,33691
+0x7362; 0x0001; 0x881D; 0x0000    # 95074,34845
+0x74DD; 0x0001; 0x881D; 0x0000    # 95453,34845
+0x74DD; 0x0001; 0x8C66; 0x0000    # 95453,35942
+0x7712; 0x0001; 0x8C66; 0x0000    # 96018,35942
+0x7712; 0x0001; 0x90E8; 0x0000    # 96018,37096
+0x78A2; 0x0001; 0x90E8; 0x0000    # 96418,37096
+0x78A2; 0x0001; 0x9625; 0x0000    # 96418,38437
+0x7755; 0x0001; 0x9625; 0x0000    # 96085,38437
+0x7755; 0x0001; 0x9A53; 0x0000    # 96085,39507
+0x7A31; 0x0001; 0x9A53; 0x0000    # 96817,39507
+0x7A31; 0x0001; 0x9EA1; 0x0000    # 96817,40609
+0x7CE7; 0x0001; 0x9EA1; 0x0000    # 97511,40609
+0x7CE7; 0x0001; 0xA3D3; 0x0000    # 97511,41939
+0x7AF5; 0x0001; 0xA3D3; 0x0000    # 97013,41939
+0x7AF5; 0x0001; 0xA855; 0x0000    # 97013,43093
+0x7CC2; 0x0001; 0xA855; 0x0000    # 97474,43093
+0x7CC2; 0x0001; 0xAD1C; 0x0000    # 97474,44316
+0x7CCA; 0x0001; 0xAD1C; 0x0000    # 97482,44316
+0x7CCA; 0x0001; 0xB1A2; 0x0000    # 97482,45474
+0x7F3B; 0x0001; 0xB1A2; 0x0000    # 98107,45474
+0x7F3B; 0x0001; 0xB696; 0x0000    # 98107,46742
+0x7CDF; 0x0001; 0xB696; 0x0000    # 97503,46742
+0x7CDF; 0x0001; 0xBB3A; 0x0000    # 97503,47930
+0x7E9E; 0x0001; 0xBB3A; 0x0000    # 97950,47930
+0x7E9E; 0x0001; 0xBFF4; 0x0000    # 97950,49140
+0x7FF1; 0x0001; 0xBFF4; 0x0000    # 98289,49140
+0x7FF1; 0x0001; 0xC4B7; 0x0000    # 98289,50359
+0xFFFF; 0xFFFF    # the end mark
