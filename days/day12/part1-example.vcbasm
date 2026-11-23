@@ -1,0 +1,337 @@
+# Advent of Code 2025, day 12 (Christmas Tree Farm), with the puzzle's example as input (this program leaves all three regions undecided; the example's answer is 2)
+#
+# THE PUZZLE
+# The input is a few shapes of presents, drawn on a grid of 3 by 3 (# is part of the present), and a
+# list of regions: a width, a length, and how many presents of each shape must go into it. Presents may
+# be turned and flipped, must lie on the grid and may not overlap. The answer is the number of regions
+# that can hold all their presents.
+#
+# THE IDEA
+# Deciding this in general means trying to pack, which takes far too long for regions of 40 by 40 with
+# 250 presents. But two simple tests are certain, each in one direction:
+#   - TOO MANY CELLS. Count the cells of all the presents. If that is more than WIDTH * LENGTH, they
+#     cannot fit, however they are turned.
+#   - ROOM FOR A BLOCK EACH. Cut the region into blocks of 3 by 3: (WIDTH / 3) * (LENGTH / 3) of them,
+#     dividing downwards. If there are at least as many blocks as presents, give every present a block
+#     of its own: they fit.
+# A region that passes neither test is UNDECIDED: the program does not guess. For the puzzle input every
+# region is decided by one of the two tests (0 have too many cells, 0 have room for a block each),
+# so FITTING is the answer. For the puzzle's small example all three regions are undecided: its answer, 2,
+# takes a real packing search, which this program does not have.
+#
+# THE WHOLE PROGRAM IN PSEUDO CODE
+#     for each shape: CELLS[shape] = the number of # in it
+#     for each region WIDTH, LENGTH and its counts:
+#         AREA = WIDTH * LENGTH
+#         NEED = the sum of count * CELLS[shape]; PRESENTS = the sum of the counts
+#         if NEED > AREA: TOO_MANY = TOO_MANY + 1
+#         else if (WIDTH / 3) * (LENGTH / 3) >= PRESENTS: FITTING = FITTING + 1
+#         else: UNDECIDED = UNDECIDED + 1
+#     write FITTING as five decimal digits
+#     stop
+# The CPU has no multiply and no divide. The numbers are small, so a product is made by adding one
+# number as often as the other says, and a division by 3 by counting how often 3 can be taken away.
+#
+# THE RESULT, when the CPU stops on the Breakpoint at END
+#   0x0100         FITTING: the regions that hold their presents for certain
+#   0x0101         UNDECIDED: the regions neither test decides (0 means FITTING is the puzzle's answer)
+#   0x0102         TOO_MANY: the regions that cannot hold them for certain
+#   0x0110-0x0114  FITTING as five decimal digits, one per word, most significant first
+#
+# THE INPUT (rule 1 of RULES.md), at 0x2000
+#     the shapes, in their order: one word per cell, 1 for # and 0 for .; 0xFFFE ends a row of the
+#     drawing and 0xFFFF the shape. After the last shape comes one more 0xFFFF.
+#     the regions: the width, the length, the count for each shape, then 0xFFFF. After the last region
+#     comes one more 0xFFFF.
+# Built-in limits: shapes of at most 3 by 3 (the block test relies on it); at most 256 shapes; every
+# number below 65,536, also WIDTH * LENGTH and the cells needed.
+#
+# ONE WORD IS ENOUGH
+# Every value here fits in 16 bits, so each variable is one memory word. The idioms used everywhere
+# (v is a variable's address, below 0x1000):
+#     getA v                   A = the word at v   (lia v; load rgA rgA: lia puts the address in A, load replaces it)
+#     getB v                   B = the word at v
+#     putA v                   the word at v = A   (this uses up B)
+#     getAat p / putAat p      the same for the word the pointer p points at
+#     copy v w                 w = v
+#     if_eq L / if_neq L       compares A with B as they are now
+#     sub; if_carry L          after A - B: taken when A >= B
+# What each instruction does exactly is in findings/cpu-instructions.md.
+#
+# MEMORY MAP
+#   0x0100-0x013F  variables            0x0200-0x02FF  CELLS: the number of cells of each shape
+#   0x1000-        the program          0x1E00-  POWERS: 10000, 1000, 100, 10, 1, 0
+#   0x2000-        the input (6 shapes and 3 regions end at 0x2064)
+#   0xFF00         where the CPU starts
+
+# ---- The CPU's instructions as symbols (day 1's table without its _32 names, which the CPU ignores) ----
+symbol nop 0b0000_0000_0000_0000            # the word 0: stops the CPU (the same word as non)
+symbol ld  0b0010_0000_0000_0000            # load a register from memory (used through the load macro)
+symbol lia 0b0011_0000_0000_0000            # lia n: A = n (0 to 4095), upper half 0
+symbol lib 0b0100_0000_0000_0000            # lib n: B = n (0 to 4095), upper half 0
+symbol sto 0b0101_0000_0000_0000            # store a register to memory (used through the store macro)
+
+macro  load  { ld  | a? | (b? >> 6) }       # load X Y: X = the word at the address in Y
+macro  store { sto | a? | (b? >> 6) }       # store X Y: the word at the address in Y = X
+
+symbol sum    0b0110_0100_0000_0000         # A = A + B (32 bits), sets zero, carry, nega
+symbol sub    0b0110_0010_0000_0000         # A = A - B (32 bits), sets zero, carry, nega
+symbol shf    0b0110_0001_0000_0000         # shf | k: A = A shifted left by k (0 to 15)
+symbol and    0b0110_0000_1000_0000         # A = A and B
+symbol or     0b0110_0000_0100_0000         # A = A or B
+symbol xor    0b0110_0000_0010_0000         # A = A xor B
+symbol neg    0b0110_0000_0001_0000         # A = every bit of A flipped
+
+symbol psh 0b1010_0000_0000_0000            # psh X: push the 16 bits of X
+symbol pop 0b1011_0000_0000_0000            # pop X: pop 16 bits into X
+
+symbol jmp  0b1100_0000_0000_0000           # jmp; L: go to L.  jmp c; L: go to L when c holds
+symbol call 0b1110_0000_0000_0000           # call; L: run the subroutine at L
+symbol ret  0b1111_0000_0000_0000           # return from a subroutine
+
+# The registers, as load, store, psh and pop name them
+symbol rgAH 0b1000_0000_0000                # the upper 16 bits of A
+symbol rgA  0b0100_0000_0000                # the lower 16 bits of A
+symbol rgBH 0b0010_0000_0000                # the upper 16 bits of B
+symbol rgB  0b0001_0000_0000                # the lower 16 bits of B
+symbol rgSP 0b0000_1000_0000                # the program counter (leave alone)
+symbol rgSB 0b0000_0100_0000                # the stack pointer (leave alone)
+symbol non  0                               # stops the CPU (Breakpoint): the end of the program
+
+# The conditions of jmp
+symbol zero  0b1000_0000_0000               # the last sum or sub gave 0
+symbol carry 0b0100_0000_0000               # the last sum carried, or the last sub did not borrow (A >= B)
+symbol nega  0b0010_0000_0000               # the last sub went below 0 (A < B)
+symbol eq    0b0001_0000_0000               # A == B right now
+symbol neq   0b0000_1000_0000               # A != B right now
+
+# ---- Macros for the common operations (explained in the README). A macro cannot use another macro, so
+#      load and store are spelled out here. v: a variable, p: a variable holding an address, L: a label ----
+macro getA     { lia a?; ld | rgA | (rgA >> 6) }                                              # A = v
+macro getB     { lib a?; ld | rgB | (rgB >> 6) }                                              # B = v
+macro putA     { lib a?; sto | rgA | (rgB >> 6) }                                             # v = A (uses B)
+macro getAat   { lia a?; ld | rgA | (rgA >> 6); ld | rgA | (rgA >> 6) }                       # A = the word p points at
+macro putAat   { lib a?; ld | rgB | (rgB >> 6); sto | rgA | (rgB >> 6) }                      # the word p points at = A (uses B)
+macro inc      { lia a?; ld | rgA | (rgA >> 6); lib 1; sum; lib a?; sto | rgA | (rgB >> 6) }  # v = v + 1 (uses A and B)
+macro goto     { jmp; a? }                                                                    # go to L
+macro if_eq    { jmp eq; a? }                                                                 # go to L when A == B
+macro do       { call; a? }                                                                   # call the subroutine L
+macro if_carry { jmp carry; a? }                                                              # go to L after a sub when A >= B
+macro copy     { lia a?; ld | rgA | (rgA >> 6); lib b?; sto | rgA | (rgB >> 6) }                      # w = v (uses A and B)
+macro if_neq   { jmp neq; a? }                                                                # go to L when A != B
+
+# ---- Variables (all below 0x1000, so lia/lib can address them) ----
+# The results
+pointer FITTING 0x0100 0
+pointer UNDECIDED 0x0101 0
+pointer TOO_MANY 0x0102 0
+# IN: the address of the next word of the input. SC: a place in CELLS. COUNT: a number being counted
+pointer IN 0x0120 0x2000
+pointer SC 0x0121 0x0200
+pointer COUNT 0x0122 0
+# The region: its sides, their product, the cells needed, the number of presents
+pointer WIDTH 0x0123 0
+pointer LENGTH 0x0124 0
+pointer AREA 0x0125 0
+pointer NEED 0x0126 0
+pointer PRESENTS 0x0127 0
+# TIMES: how often something is still to be added. NUMBER: a count of presents from the input
+pointer TIMES 0x0128 0
+pointer NUMBER 0x0129 0
+# W3, L3: WIDTH / 3 and LENGTH / 3. BLOCKS: their product. LEFT: what is left of a side while dividing
+pointer W3 0x012A 0
+pointer L3 0x012B 0
+pointer BLOCKS 0x012C 0
+pointer LEFT 0x012D 0
+# For the decimal digits: what is left of FITTING, the current power of ten, how often it fitted
+pointer REST 0x012E 0
+pointer POWER 0x012F 0
+pointer DIGIT_VALUE 0x0130 0
+# Pointers: DIGIT the next digit to write, POW the next power of ten
+pointer DIGIT 0x0131 0x0110
+pointer POW 0x0132 0x1E00
+# Constants that do not fit an instruction's place for a number
+pointer CELLS 0x0133 0x0200
+pointer END_MARK 0x0134 0xFFFF
+
+# ---- The CPU starts at 0xFF00 ----
+origin 0xFF00
+goto MAIN
+
+origin 0x1000
+@ MAIN
+# ==== the shapes: count their cells ====
+#     while memory[IN] != 0xFFFF:                           # SC starts at CELLS
+#         COUNT = 0
+#         while memory[IN] != 0xFFFF:
+#             if memory[IN] == 1: COUNT = COUNT + 1         # a 0 or the 0xFFFE that ends a row counts nothing
+#             IN = IN + 1
+#         memory[SC] = COUNT; SC = SC + 1; IN = IN + 1
+#     IN = IN + 1
+@ SHAPE
+	getAat IN; getB END_MARK                                     # A = memory[IN], B = 0xFFFF
+	if_eq SHAPES_DONE                                            # the end of the shapes
+	lia 0; putA COUNT                                            # COUNT = 0
+@ SHAPE_CELL
+	getAat IN; getB END_MARK                                     # A = memory[IN], B = 0xFFFF
+	if_eq SHAPE_END                                              # the end of this shape
+	lib 1                                                        # B = 1
+	if_neq SHAPE_NEXT                                            # not part of the present
+	inc COUNT                                                    # COUNT = COUNT + 1
+@ SHAPE_NEXT
+	inc IN                                                       # IN = IN + 1
+	goto SHAPE_CELL
+@ SHAPE_END
+	getA COUNT; putAat SC                                        # memory[SC] = COUNT
+	inc SC                                                       # SC = SC + 1
+	inc IN                                                       # IN = IN + 1: past the 0xFFFF
+	goto SHAPE
+@ SHAPES_DONE
+	inc IN                                                       # IN = IN + 1: past the 0xFFFF
+
+# ==== a region: its area ====
+#     WIDTH = memory[IN]; if WIDTH == 0xFFFF: goto ALL_DONE
+#     LENGTH = memory[IN + 1]; IN = IN + 2
+#     AREA = 0; repeat LENGTH times: AREA = AREA + WIDTH
+@ REGION
+	getAat IN; putA WIDTH                                        # WIDTH = memory[IN]
+	getB END_MARK                                                # B = 0xFFFF (A still holds WIDTH)
+	if_eq ALL_DONE                                               # the end of the regions
+	inc IN                                                       # IN = IN + 1
+	load rgA rgA; putA LENGTH                                    # LENGTH = memory[IN] (A still held IN)
+	inc IN                                                       # IN = IN + 1
+	lia 0; putA AREA                                             # AREA = 0
+	copy LENGTH TIMES                                            # TIMES = LENGTH
+@ AREA_ADD
+	getA TIMES; lib 0                                            # A = TIMES, B = 0
+	if_eq AREA_DONE                                              # WIDTH has been added LENGTH times
+	lib 1; sub; putA TIMES                                       # TIMES = TIMES - 1
+	getA AREA; getB WIDTH; sum; putA AREA                        # AREA = AREA + WIDTH
+	goto AREA_ADD
+@ AREA_DONE
+
+# ==== its presents ====
+#     NEED = 0; PRESENTS = 0
+#     for SC = CELLS; memory[IN] != 0xFFFF; SC = SC + 1, IN = IN + 1:
+#         NUMBER = memory[IN]; PRESENTS = PRESENTS + NUMBER
+#         repeat memory[SC] times: NEED = NEED + NUMBER     # NUMBER * (the cells of the shape)
+#     IN = IN + 1
+	lia 0; putA NEED; putA PRESENTS                              # NEED = 0; PRESENTS = 0
+	copy CELLS SC                                                # SC = the first shape
+@ PRESENT
+	getAat IN; putA NUMBER                                       # NUMBER = memory[IN]
+	getB END_MARK                                                # B = 0xFFFF (A still holds NUMBER)
+	if_eq PRESENTS_DONE                                          # the end of the counts
+	getB PRESENTS; sum; putA PRESENTS                            # PRESENTS = PRESENTS + NUMBER
+	getAat SC; putA TIMES                                        # TIMES = the cells of this shape
+@ NEED_ADD
+	getA TIMES; lib 0                                            # A = TIMES, B = 0
+	if_eq NEED_DONE                                              # NUMBER has been added once for every cell
+	lib 1; sub; putA TIMES                                       # TIMES = TIMES - 1
+	getA NEED; getB NUMBER; sum; putA NEED                       # NEED = NEED + NUMBER
+	goto NEED_ADD
+@ NEED_DONE
+	inc SC                                                       # SC = SC + 1
+	inc IN                                                       # IN = IN + 1
+	goto PRESENT
+@ PRESENTS_DONE
+	inc IN                                                       # IN = IN + 1: past the 0xFFFF
+
+# ==== the two tests ====
+#     if NEED > AREA: TOO_MANY = TOO_MANY + 1; goto REGION
+#     W3 = WIDTH / 3; L3 = LENGTH / 3                       # how often 3 can be taken away
+#     BLOCKS = 0; repeat L3 times: BLOCKS = BLOCKS + W3
+#     if BLOCKS >= PRESENTS: FITTING = FITTING + 1
+#     else: UNDECIDED = UNDECIDED + 1
+	getA AREA; getB NEED; sub                                    # A = AREA - NEED
+	if_carry ENOUGH_CELLS                                        # AREA >= NEED
+	inc TOO_MANY                                                 # TOO_MANY = TOO_MANY + 1
+	goto REGION
+@ ENOUGH_CELLS
+	lia 0; putA W3; putA L3; putA BLOCKS                         # W3 = 0; L3 = 0; BLOCKS = 0
+	copy WIDTH LEFT                                              # LEFT = WIDTH
+@ WIDTH_BY_3
+	getA LEFT; lib 3; sub                                        # A = LEFT - 3
+	if_carry WIDTH_TAKE                                          # LEFT >= 3
+	goto WIDTH_DIVIDED
+@ WIDTH_TAKE
+	putA LEFT                                                    # LEFT = LEFT - 3 (A still holds the difference)
+	inc W3                                                       # W3 = W3 + 1
+	goto WIDTH_BY_3
+@ WIDTH_DIVIDED
+	copy LENGTH LEFT                                             # LEFT = LENGTH
+@ LENGTH_BY_3
+	getA LEFT; lib 3; sub                                        # A = LEFT - 3
+	if_carry LENGTH_TAKE                                         # LEFT >= 3
+	goto LENGTH_DIVIDED
+@ LENGTH_TAKE
+	putA LEFT                                                    # LEFT = LEFT - 3
+	inc L3                                                       # L3 = L3 + 1
+	getA BLOCKS; getB W3; sum; putA BLOCKS                       # BLOCKS = BLOCKS + W3: one more row of blocks
+	goto LENGTH_BY_3
+@ LENGTH_DIVIDED
+	getA BLOCKS; getB PRESENTS; sub                              # A = BLOCKS - PRESENTS
+	if_carry BLOCK_EACH                                          # BLOCKS >= PRESENTS
+	inc UNDECIDED                                                # UNDECIDED = UNDECIDED + 1
+	goto REGION
+@ BLOCK_EACH
+	inc FITTING                                                  # FITTING = FITTING + 1
+	goto REGION
+
+# ==== write FITTING as five decimal digits ====
+# A digit is how often a power of ten fits into what is left. Without division that is counting:
+#     REST = FITTING
+#     for POWER in 10000, 1000, 100, 10, 1:
+#         DIGIT_VALUE = 0
+#         while REST >= POWER: REST = REST - POWER; DIGIT_VALUE = DIGIT_VALUE + 1
+#         memory[DIGIT] = DIGIT_VALUE; DIGIT = DIGIT + 1
+# After sub, the carry flag is set when A >= B (no borrow).
+@ ALL_DONE
+	getA FITTING; putA REST                                        # REST = FITTING
+@ NEXT_POWER
+	getAat POW                                                   # A = memory[POW], the next power of ten
+	putA POWER                                                   # POWER = A
+	lib 0                                                        # B = 0
+	if_eq END                                                    # a power of 0 ends the table
+	inc POW                                                      # POW = POW + 1
+	lia 0; putA DIGIT_VALUE                                      # DIGIT_VALUE = 0
+@ FITS_AGAIN
+	getA REST; getB POWER                                        # A = REST, B = POWER
+	sub                                                          # A = REST - POWER
+	if_carry FITS                                                # REST >= POWER: it fits once more
+	getA DIGIT_VALUE; putAat DIGIT                                       # memory[DIGIT] = DIGIT_VALUE   (B holds the address in DIGIT)
+	inc DIGIT                                                    # DIGIT = DIGIT + 1
+	goto NEXT_POWER
+@ FITS
+	putA REST                                                    # REST = REST - POWER   (A still holds the difference)
+	inc DIGIT_VALUE                                                          # DIGIT_VALUE = DIGIT_VALUE + 1
+	goto FITS_AGAIN
+
+# The word 0 stops the CPU on its Breakpoint.
+@ END
+	non
+# ---- Powers of ten for the decimal digits, then 0 ----
+origin 0x1E00
+10000; 1000; 100; 10; 1; 0
+
+
+# ---- The shapes, then the regions ----
+origin 0x2000
+# shape 0: ### / ##. / ##.
+1; 1; 1; 0xFFFE; 1; 1; 0; 0xFFFE; 1; 1; 0; 0xFFFF
+# shape 1: ### / ##. / .##
+1; 1; 1; 0xFFFE; 1; 1; 0; 0xFFFE; 0; 1; 1; 0xFFFF
+# shape 2: .## / ### / ##.
+0; 1; 1; 0xFFFE; 1; 1; 1; 0xFFFE; 1; 1; 0; 0xFFFF
+# shape 3: ##. / ### / ##.
+1; 1; 0; 0xFFFE; 1; 1; 1; 0xFFFE; 1; 1; 0; 0xFFFF
+# shape 4: ### / #.. / ###
+1; 1; 1; 0xFFFE; 1; 0; 0; 0xFFFE; 1; 1; 1; 0xFFFF
+# shape 5: ### / .#. / ###
+1; 1; 1; 0xFFFE; 0; 1; 0; 0xFFFE; 1; 1; 1; 0xFFFF
+0xFFFF
+# the regions: width; length; the counts; 0xFFFF
+4; 4; 0; 0; 0; 0; 2; 0; 0xFFFF
+12; 5; 1; 0; 1; 0; 2; 2; 0xFFFF
+12; 5; 1; 0; 1; 0; 3; 2; 0xFFFF
+0xFFFF

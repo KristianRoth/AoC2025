@@ -26,6 +26,7 @@ The CPU's board files for the Steam game Virtual Circuit Board (Update 1.0.1), a
 | `days/day10/cpu-32bit-autorun-aoc10p2.vcb` | The same for `days/day10/part2.vcbasm`; Persistent Memory `0x0100`–`0x0114`. |
 | `days/day11/cpu-32bit-autorun-aoc11p1.vcb` | The same for `days/day11/part1.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
 | `days/day11/cpu-32bit-autorun-aoc11p2.vcb` | The same for `days/day11/part2.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
+| `days/day12/cpu-32bit-autorun-aoc12p1.vcb` | The same for `days/day12/part1.vcbasm`; Persistent Memory `0x0100`–`0x0114`. |
 
 The boards differ only in those 24 latch pixels, in the assembly text they carry, and in the Persistent Memory range.
 
@@ -83,6 +84,8 @@ The rules the puzzles are solved under are in [`RULES.md`](RULES.md).
 | `days/day11/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 5) |
 | `days/day11/part2.vcbasm` | Advent of Code day 11, part 2. The header says where the answer is left |
 | `days/day11/part2-example.vcbasm` | The same program with the puzzle's second example as input (answer 2) |
+| `days/day12/part1.vcbasm` | Advent of Code day 12. The header says where the answer is left |
+| `days/day12/part1-example.vcbasm` | The same program with the puzzle's example as input. **It does not solve the example** (answer 2): it leaves all three regions undecided, see the notes |
 
 ## How a solution is written
 
@@ -145,6 +148,8 @@ Measured in the `vcb` engine on `cpu-32bit-autorun-aoc1p1.vcb`, to the Breakpoin
 | Day 11 part 1 | 652 | 22,973,904 | 0.2 s | 90,000 | 3,333 words |
 | Day 11 part 2, example | 2 | 3,571,984 | 0.04 s | 14,000 | 751 words |
 | Day 11 part 2 | 362956369749210 | 269,092,752 | 1.4 s | 1,051,000 | 3,467 words |
+| Day 12, example | not decided (0 fit for certain, 3 undecided; the answer is 2) | 1,284,880 | 0.01 s | 5,000 | 455 words |
+| Day 12 | 427 | 464,586,704 | 0.8 s | 1,815,000 | 9,428 words |
 
 "Instructions run" is the tick count divided by 256, the cost of most instructions:
 
@@ -279,6 +284,15 @@ Notes on the day 11 solutions:
 - **Part 2's numbers are four words each:** the answer has 15 digits.
 - **Part 2's time:** 269 million ticks, about 54 seconds in the game. Each device reached from svr is still counted once.
 - **Part 2's size:** about 580 words of code, variables and the powers of ten.
+
+Notes on the day 12 solution:
+
+- **Two certain tests, no packing.** A region cannot hold its presents when they have more cells than the region; it can when there are at least as many 3 × 3 blocks in it as presents, a block for each. The program counts both kinds, and a third: regions that neither test decides. It never guesses.
+- **For the puzzle input nothing is left undecided:** 573 regions have too many cells and 427 have a block for every present, so 427 is the answer and each region is decided for certain.
+- **The puzzle's example is not solved** (rule 7 of `RULES.md` asks for it): all three of its regions lie between the two tests, and the program reports them as undecided. Deciding them takes a real packing search. A plain one on the host (fill the region cell by cell, each present in every turn) needed 4 steps for the first region, 24,973 for the second and 4,539,203 to show that the third cannot be packed; on this CPU that last one would run for hours. The owner decides whether such a search is worth building.
+- **Products and divisions by adding and taking away:** the numbers are small (sides up to 50, 6 shapes), so width × length is the width added length times, and a third of a side is how often 3 can be taken away.
+- **Time:** 465 million ticks for 1,000 regions, about a minute and a half in the game at 5 million ticks a second.
+- **Size:** about 330 words of code and variables; the rest of the 9,428 words is the input.
 
 ## Instruction set
 
