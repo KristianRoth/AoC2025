@@ -24,6 +24,7 @@ The CPU's board files for the Steam game Virtual Circuit Board (Update 1.0.1), a
 | `days/day9/cpu-32bit-autorun-aoc9p2.vcb` | The same for `days/day9/part2.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
 | `days/day10/cpu-32bit-autorun-aoc10p1.vcb` | The same for `days/day10/part1.vcbasm`; Persistent Memory `0x0100`–`0x0114`. |
 | `days/day10/cpu-32bit-autorun-aoc10p2.vcb` | The same for `days/day10/part2.vcbasm`; Persistent Memory `0x0100`–`0x0114`. |
+| `days/day11/cpu-32bit-autorun-aoc11p1.vcb` | The same for `days/day11/part1.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
 
 The boards differ only in those 24 latch pixels, in the assembly text they carry, and in the Persistent Memory range.
 
@@ -77,6 +78,8 @@ The rules the puzzles are solved under are in [`RULES.md`](RULES.md).
 | `days/day10/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 7) |
 | `days/day10/part2.vcbasm` | Advent of Code day 10, part 2. The header says where the answer is left |
 | `days/day10/part2-example.vcbasm` | The same program with the puzzle's example as input (answer 33) |
+| `days/day11/part1.vcbasm` | Advent of Code day 11, part 1. The header says where the answer is left |
+| `days/day11/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 5) |
 
 ## How a solution is written
 
@@ -135,6 +138,8 @@ Measured in the `vcb` engine on `cpu-32bit-autorun-aoc1p1.vcb`, to the Breakpoin
 | Day 10 part 1 | 475 | 1,010,771,664 | 2.9 s | 3,948,000 | 9,846 words |
 | Day 10 part 2, example | 33 | 10,531,024 | 0.07 s | 41,000 | 1,549 words |
 | Day 10 part 2 | 18273 | 10,976,582,736 | 13 s | 42,877,000 | 10,930 words |
+| Day 11 part 1, example | 5 | 1,363,344 | 0.02 s | 5,300 | 612 words |
+| Day 11 part 1 | 652 | 22,973,904 | 0.2 s | 90,000 | 3,333 words |
 
 "Instructions run" is the tick count divided by 256, the cost of most instructions:
 
@@ -258,6 +263,13 @@ Notes on the day 10 solutions:
 - **Part 2 calls itself** and keeps its state on the CPU's stack, the first program here to do so.
 - **Part 2's time:** 11 thousand million ticks, about 37 minutes in the game at 5 million ticks a second. The engine ran it at 850 million ticks a second, faster than the other programs here; why was not looked into.
 - **Part 2's size:** about 1,450 words of code, variables and tables.
+
+Notes on the day 11 solution:
+
+- **A name is a number.** A device name is three letters; in memory it is (first · 26 + second) · 26 + third with a = 0, so one of 17,576 numbers. A table with a word for each possible name gives the address of the device's record, so finding a device by name is one load.
+- **Every device is counted once.** The number of paths from a device to "out" is the sum over its outputs, and "out" has 1. The program works that out from "you" downwards, calling itself for each output, and marks a record done when it has its number; reaching the device again by another way just reads it.
+- **Only what "you" leads to is touched:** 23 million ticks, about 5 seconds in the game at 5 million ticks a second.
+- **Size:** about 440 words of code, variables and the powers of ten; the rest of the 3,333 words is the input.
 
 ## Instruction set
 

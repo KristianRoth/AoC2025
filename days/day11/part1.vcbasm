@@ -1,0 +1,925 @@
+# Advent of Code 2025, day 11 part 1 (Reactor)
+#
+# THE PUZZLE
+# Each line of the input names a device and the devices its outputs lead to. Data flows only from a
+# device through its outputs. The answer is the number of different paths from the device "you" to the
+# device "out".
+#
+# THE IDEA
+# The number of paths from a device to "out" is the sum of that number for each of its outputs, and
+# "out" itself has 1. So the program works the numbers out from "you" downwards, and keeps the number
+# of every device it has finished: a device reached a second time, by another way, costs nothing more.
+# In the example: ddd, eee, fff, ggg and iii have 1 each; bbb = ddd + eee = 2; ccc = ddd + eee + fff = 3;
+# you = bbb + ccc = 5.
+# A device name is three letters. In memory it is one number: a = 0, b = 1, ..., z = 25, and the name
+# is (first * 26 + second) * 26 + third, so "you" is 16608 and "out" is 9977. A table with one word
+# for each of the 17,576 possible names says where the device's record is.
+#
+# THE WHOLE PROGRAM IN PSEUDO CODE
+#     for each line of the input: give the device a record; DEVICE[its name] = the record's address
+#     give "out" a record with PATHS = 1, marked done
+#     REC = DEVICE["you"]; COUNT
+#     TOTAL = PATHS of "you"; write TOTAL as 15 decimal digits
+#     stop
+#
+#     COUNT:                                                # the record at REC gets its PATHS
+#         if REC is marked done: return
+#         for each output of the device:
+#             if there is a device of that name: keep REC and the place in the list; REC = its record; COUNT;
+#                 get them back; PATHS of REC = PATHS of REC + PATHS of the output
+#         mark REC done
+#
+# COUNT calls itself. What it must keep goes on the CPU's stack with psh and comes back with pop.
+#
+# NUMBERS OF FOUR WORDS
+# The number of paths can be far larger than a register holds. PATHS and TOTAL are four 16-bit words,
+# lowest first, added word by word: two words are added in a 32-bit register, the lower half of the sum
+# is the result's word and the upper half the carry into the next word.
+#
+# THE RESULT, when the CPU stops on the Breakpoint at END
+#   0x0100-0x0103  TOTAL as four 16-bit words, lowest first
+#   0x0110-0x011E  TOTAL as 15 decimal digits, one per word, most significant first
+#
+# THE INPUT (rule 1 of RULES.md), at 0x2000
+# Line after line: the device's name as a number, the names of its outputs, then 0xFFFF. After the
+# last line comes one more 0xFFFF.
+# Built-in limits: names of three small letters; at most 1,360 devices; the input ends before 0x6000;
+# no path comes back to a device it has left (the puzzle's "data cannot flow backwards");
+# the answer below 10^15.
+#
+# THE IDIOMS (v is a variable's address, below 0x1000)
+#     getA v / getB v          A or B = the word at v, upper half 0
+#     putA v                   the word at v = A   (this uses up B)
+#     getAat p / putAat p      the same for the word the pointer p points at
+#     getAoff p k              A = the word at the address (p + k); p is a variable holding an address
+#     copy v w                 w = v
+#     keepcarry v              v = the upper half of A: the carry of the sum just made
+#     if_eq L / if_neq L       compares A with B as they are now
+# What each instruction does exactly is in findings/cpu-instructions.md.
+#
+# MEMORY MAP
+#   0x0100-0x014F  variables            0x2000-  the input (576 lines end at 0x2AC6)
+#   0x1000-        the program          0x6000-  the records, six words each: the address of the device's
+#   0x1800-        the subroutines               outputs, 1 when done, PATHS (four words)
+#   0x1E00-        POWERS: 10^14 down to 1, four words each, then 0
+#   0x8000-0xC4A7  DEVICE: for each possible name, the address of the device's record, or 0
+#   0xE000-        the CPU's stack
+#   0xFF00         where the CPU starts
+
+# ---- The CPU's instructions as symbols (day 1's table without its _32 names, which the CPU ignores) ----
+symbol nop 0b0000_0000_0000_0000            # the word 0: stops the CPU (the same word as non)
+symbol ld  0b0010_0000_0000_0000            # load a register from memory (used through the load macro)
+symbol lia 0b0011_0000_0000_0000            # lia n: A = n (0 to 4095), upper half 0
+symbol lib 0b0100_0000_0000_0000            # lib n: B = n (0 to 4095), upper half 0
+symbol sto 0b0101_0000_0000_0000            # store a register to memory (used through the store macro)
+
+macro  load  { ld  | a? | (b? >> 6) }       # load X Y: X = the word at the address in Y
+macro  store { sto | a? | (b? >> 6) }       # store X Y: the word at the address in Y = X
+
+symbol sum    0b0110_0100_0000_0000         # A = A + B (32 bits), sets zero, carry, nega
+symbol sub    0b0110_0010_0000_0000         # A = A - B (32 bits), sets zero, carry, nega
+symbol shf    0b0110_0001_0000_0000         # shf | k: A = A shifted left by k (0 to 15)
+symbol and    0b0110_0000_1000_0000         # A = A and B
+symbol or     0b0110_0000_0100_0000         # A = A or B
+symbol xor    0b0110_0000_0010_0000         # A = A xor B
+symbol neg    0b0110_0000_0001_0000         # A = every bit of A flipped
+
+symbol psh 0b1010_0000_0000_0000            # psh X: push the 16 bits of X
+symbol pop 0b1011_0000_0000_0000            # pop X: pop 16 bits into X
+
+symbol jmp  0b1100_0000_0000_0000           # jmp; L: go to L.  jmp c; L: go to L when c holds
+symbol call 0b1110_0000_0000_0000           # call; L: run the subroutine at L
+symbol ret  0b1111_0000_0000_0000           # return from a subroutine
+
+# The registers, as load, store, psh and pop name them
+symbol rgAH 0b1000_0000_0000                # the upper 16 bits of A
+symbol rgA  0b0100_0000_0000                # the lower 16 bits of A
+symbol rgBH 0b0010_0000_0000                # the upper 16 bits of B
+symbol rgB  0b0001_0000_0000                # the lower 16 bits of B
+symbol rgSP 0b0000_1000_0000                # the program counter (leave alone)
+symbol rgSB 0b0000_0100_0000                # the stack pointer (leave alone)
+symbol non  0                               # stops the CPU (Breakpoint): the end of the program
+
+# The conditions of jmp
+symbol zero  0b1000_0000_0000               # the last sum or sub gave 0
+symbol carry 0b0100_0000_0000               # the last sum carried, or the last sub did not borrow (A >= B)
+symbol nega  0b0010_0000_0000               # the last sub went below 0 (A < B)
+symbol eq    0b0001_0000_0000               # A == B right now
+symbol neq   0b0000_1000_0000               # A != B right now
+
+# ---- Macros for the common operations (explained in the README). A macro cannot use another macro, so
+#      load and store are spelled out here. v: a variable, p: a variable holding an address, L: a label ----
+macro getA     { lia a?; ld | rgA | (rgA >> 6) }                                              # A = v
+macro getB     { lib a?; ld | rgB | (rgB >> 6) }                                              # B = v
+macro putA     { lib a?; sto | rgA | (rgB >> 6) }                                             # v = A (uses B)
+macro getAat   { lia a?; ld | rgA | (rgA >> 6); ld | rgA | (rgA >> 6) }                       # A = the word p points at
+macro putAat   { lib a?; ld | rgB | (rgB >> 6); sto | rgA | (rgB >> 6) }                      # the word p points at = A (uses B)
+macro inc      { lia a?; ld | rgA | (rgA >> 6); lib 1; sum; lib a?; sto | rgA | (rgB >> 6) }  # v = v + 1 (uses A and B)
+macro goto     { jmp; a? }                                                                    # go to L
+macro if_eq    { jmp eq; a? }                                                                 # go to L when A == B
+macro do       { call; a? }                                                                   # call the subroutine L
+macro if_carry { jmp carry; a? }                                                              # go to L after a sub when A >= B
+macro getAoff  { lia a?; ld | rgA | (rgA >> 6); lib b?; sum; ld | rgA | (rgA >> 6) }                # A = the word at (p + k) (uses B)
+macro copy     { lia a?; ld | rgA | (rgA >> 6); lib b?; sto | rgA | (rgB >> 6) }                      # w = v (uses A and B)
+macro get32A   { lib | (a? + 1); ld | rgAH | (rgB >> 6); lib a?; ld | rgA | (rgB >> 6) }                  # A = the 32 bits at v, v + 1 (uses B)
+macro get32B   { lia | (a? + 1); ld | rgBH | (rgA >> 6); lia a?; ld | rgB | (rgA >> 6) }                  # B = the 32 bits at v, v + 1 (uses A)
+macro get32AB  { lib | (a? + 1); ld | rgAH | (rgB >> 6); lib a?; ld | rgA | (rgB >> 6); psh rgAH; psh rgA; lia | (b? + 1); ld | rgBH | (rgA >> 6); lia b?; ld | rgB | (rgA >> 6); pop rgA; pop rgAH }
+# get32AB v w: A = the 32 bits at v, B = the 32 bits at w
+macro put32A   { lib a?; sto | rgA | (rgB >> 6); lib | (a? + 1); sto | rgAH | (rgB >> 6) }                # the 32 bits at v, v + 1 = A (uses B)
+
+macro keepcarry { psh rgAH; pop rgB; lia a?; sto | rgB | (rgA >> 6) }                                 # v = the upper half of A (uses A and B)
+macro if_neq   { jmp neq; a? }                                                                # go to L when A != B
+
+
+# ---- Variables (all below 0x1000, so lia/lib can address them) ----
+# The result, four words: the number of paths
+pointer TOTAL0 0x0100 0
+pointer TOTAL1 0x0101 0
+pointer TOTAL2 0x0102 0
+pointer TOTAL3 0x0103 0
+# IN: the address of the next word of the input. NEXT_REC: the next free record
+pointer IN 0x0120 0x2000
+pointer NEXT_REC 0x0121 0x6000
+# REC: the record COUNT works on. LP: the place in its list of outputs. CHILD: the record of an output
+pointer REC 0x0122 0
+pointer LP 0x0123 0
+pointer CHILD 0x0124 0
+# PA, PB: the words being added. ADD: the word from PB. ADR: an address worked out for a store
+pointer PA 0x0125 0
+pointer PB 0x0126 0
+pointer ADD 0x0127 0
+pointer ADR 0x0128 0
+# The carry from one word of an addition into the next
+pointer CARRY 0x0129 0
+# SUBTRACT works out DIFF = X - Y, and CARRY = 1 when X >= Y (for the decimal digits)
+pointer X0 0x012A 0
+pointer X1 0x012B 0
+pointer X2 0x012C 0
+pointer X3 0x012D 0
+pointer Y0 0x012E 0
+pointer Y1 0x012F 0
+pointer Y2 0x0130 0
+pointer Y3 0x0131 0
+pointer DIFF0 0x0132 0
+pointer DIFF1 0x0133 0
+pointer DIFF2 0x0134 0
+pointer DIFF3 0x0135 0
+# For the decimal digits: how often the current power of ten fitted
+pointer DIGIT_VALUE 0x0136 0
+# Pointers: DIGIT the next digit to write, POW the next power of ten
+pointer DIGIT 0x0137 0x0110
+pointer POW 0x0138 0x1E00
+# Constants that do not fit an instruction's place for a number. YOU and OUT are the names "you" and "out" as numbers
+pointer DEVICE 0x0139 0x8000
+pointer YOU 0x013A 16608
+pointer OUT 0x013B 10003
+pointer END_MARK 0x013C 0xFFFF
+pointer ALL_ONES 0x013D 0xFFFF
+
+# ---- The CPU starts at 0xFF00 ----
+origin 0xFF00
+goto MAIN
+
+origin 0x1000
+@ MAIN
+# ==== a record for every device ====
+#     while memory[IN] != 0xFFFF:                           # IN starts at the first line
+#         DEVICE[memory[IN]] = NEXT_REC
+#         IN = IN + 1; memory[NEXT_REC] = IN                # the record's first word: where the outputs are listed
+#         NEXT_REC = NEXT_REC + 6
+#         while memory[IN] != 0xFFFF: IN = IN + 1           # step over the outputs
+#         IN = IN + 1
+@ LINE
+	getAat IN; getB END_MARK                                     # A = the name of the device, B = 0xFFFF
+	if_eq LINES_DONE                                             # the end of the input
+	getB DEVICE; sum                                             # A = the address of DEVICE[the name]
+	getB NEXT_REC; store rgB rgA                                 # DEVICE[the name] = NEXT_REC
+	inc IN                                                       # IN = IN + 1
+	putAat NEXT_REC                                              # memory[NEXT_REC] = IN (A still holds IN)
+	getA NEXT_REC; lib 6; sum; putA NEXT_REC                     # NEXT_REC = NEXT_REC + 6
+@ LINE_OUTPUT
+	getAat IN; getB END_MARK                                     # A = memory[IN], B = 0xFFFF
+	if_eq LINE_END
+	inc IN                                                       # IN = IN + 1
+	goto LINE_OUTPUT
+@ LINE_END
+	inc IN                                                       # IN = IN + 1: past the 0xFFFF
+	goto LINE
+
+# ==== "out" has one path, and is done; then count from "you" ====
+#     DEVICE[OUT] = NEXT_REC; memory[NEXT_REC + 1] = 1; memory[NEXT_REC + 2] = 1
+#     REC = DEVICE[YOU]; COUNT
+#     TOTAL = PATHS of REC
+@ LINES_DONE
+	getA OUT; getB DEVICE; sum                                   # A = the address of DEVICE["out"]
+	getB NEXT_REC; store rgB rgA                                 # DEVICE["out"] = NEXT_REC
+	getA NEXT_REC; lib 1; sum; lib 1; store rgB rgA              # the record is done
+	getA NEXT_REC; lib 2; sum; lib 1; store rgB rgA              # its PATHS = 1 (the lowest word; the others are 0)
+	getA YOU; getB DEVICE; sum; load rgA rgA; putA REC           # REC = DEVICE["you"]
+	do COUNT                                                     # PATHS of "you"
+	getAoff REC 2; putA TOTAL0                                   # TOTAL = PATHS of REC; word 0 (the lowest)
+	getAoff REC 3; putA TOTAL1                                   # word 1
+	getAoff REC 4; putA TOTAL2                                   # word 2
+	getAoff REC 5; putA TOTAL3                                   # word 3 (the top)
+
+# ==== write TOTAL as 15 decimal digits ====
+# A digit is how often a power of ten fits into what is left. Without division that is counting.
+# X is what is left of the total, Y the power of ten:
+#     X = TOTAL
+#     for Y in 10^14, 10^13, ..., 10, 1:                # the table ends at a number whose lowest word is 0
+#         DIGIT_VALUE = 0
+#         loop:
+#             SUBTRACT                                  # DIFF = X - Y, CARRY = 1 when X >= Y
+#             if CARRY == 0: break
+#             X = DIFF; DIGIT_VALUE = DIGIT_VALUE + 1
+#         memory[DIGIT] = DIGIT_VALUE; DIGIT = DIGIT + 1
+# (The lowest word of a power of ten up to 10^15 is never 0, so a 0 there can end the table.)
+@ WRITE_TOTAL
+	copy TOTAL0 X0                                               # X = TOTAL; word 0 (the lowest)
+	copy TOTAL1 X1                                               # word 1
+	copy TOTAL2 X2                                               # word 2
+	copy TOTAL3 X3                                               # word 3 (the top)
+@ NEXT_POWER
+	getAat POW                                                   # A = the lowest word of the next power of ten
+	lib 0                                                        # B = 0
+	if_eq END                                                    # a lowest word of 0 ends the table
+	putA Y0                                                      # Y = the power of ten; word 0 (the lowest)
+	getAoff POW 1; putA Y1                                       # word 1
+	getAoff POW 2; putA Y2                                       # word 2
+	getAoff POW 3; putA Y3                                       # word 3 (the top)
+	getA POW; lib 4; sum; putA POW                               # POW = POW + 4
+	lia 0; putA DIGIT_VALUE                                      # DIGIT_VALUE = 0
+@ FITS_AGAIN
+	do SUBTRACT                                                  # DIFF = X - Y, CARRY = 1 when X >= Y
+	getA CARRY; lib 0                                            # A = CARRY, B = 0
+	if_eq WRITE_DIGIT                                            # X < Y: the power does not fit again
+	copy DIFF0 X0                                                # X = DIFF; word 0 (the lowest)
+	copy DIFF1 X1                                                # word 1
+	copy DIFF2 X2                                                # word 2
+	copy DIFF3 X3                                                # word 3 (the top)
+	inc DIGIT_VALUE                                              # DIGIT_VALUE = DIGIT_VALUE + 1
+	goto FITS_AGAIN
+@ WRITE_DIGIT
+	getA DIGIT_VALUE; putAat DIGIT                               # memory[DIGIT] = DIGIT_VALUE
+	inc DIGIT                                                    # DIGIT = DIGIT + 1
+	goto NEXT_POWER
+
+# The word 0 stops the CPU on its Breakpoint.
+@ END
+	non
+
+# ---- Subroutines ----
+origin 0x1800
+# COUNT: the record at REC gets its PATHS, the number of paths from its device to "out". REC is left as it was.
+#     if memory[REC + 1] == 1: return                       # done before
+#     for LP = memory[REC]; memory[LP] != 0xFFFF; LP = LP + 1:
+#         CHILD = DEVICE[memory[LP]]
+#         if CHILD != 0:                                    # 0: no device of that name, so no path
+#             push REC, LP; REC = CHILD; COUNT; CHILD = REC; pop LP, REC
+#             PATHS of REC = PATHS of REC + PATHS of CHILD
+#     memory[REC + 1] = 1
+@ COUNT
+	getAoff REC 1; lib 1                                         # A = the mark of the record, B = 1
+	if_eq COUNT_RETURN                                           # done before
+	getAat REC; putA LP                                          # LP = where the outputs are listed
+@ COUNT_OUTPUT
+	getAat LP; getB END_MARK                                     # A = the name of the output, B = 0xFFFF
+	if_eq COUNT_DONE                                             # the end of the outputs
+	getB DEVICE; sum; load rgA rgA; putA CHILD                   # CHILD = DEVICE[the name]
+	lib 0                                                        # B = 0
+	if_eq COUNT_NEXT                                             # no device of that name
+	getA REC; psh rgA; getA LP; psh rgA                          # REC and LP go on the stack
+	copy CHILD REC                                               # REC = CHILD
+	do COUNT                                                     # PATHS of the output
+	copy REC CHILD                                               # CHILD = the output's record again
+	pop rgA; putA LP; pop rgA; putA REC                          # LP and REC come back
+	getA REC; lib 2; sum; putA PA                                # PA = the address of PATHS of REC
+	getA CHILD; lib 2; sum; putA PB                              # PB = the address of PATHS of CHILD
+	lia 0; putA CARRY                                            # CARRY = 0
+	getAat PB; putA ADD; getAat PA; getB ADD; sum; getB CARRY; sum; putAat PA; keepcarry CARRY; inc PA; inc PB # PATHS of REC = PATHS of REC + PATHS of CHILD; word 0
+	getAat PB; putA ADD; getAat PA; getB ADD; sum; getB CARRY; sum; putAat PA; keepcarry CARRY; inc PA; inc PB # word 1
+	getAat PB; putA ADD; getAat PA; getB ADD; sum; getB CARRY; sum; putAat PA; keepcarry CARRY; inc PA; inc PB # word 2
+	getAat PB; putA ADD; getAat PA; getB ADD; sum; getB CARRY; sum; putAat PA # word 3 (the top)
+@ COUNT_NEXT
+	inc LP                                                       # LP = LP + 1
+	goto COUNT_OUTPUT
+@ COUNT_DONE
+	getA REC; lib 1; sum; lib 1; store rgB rgA                   # the record is done
+@ COUNT_RETURN
+	ret
+
+# SUBTRACT: DIFF = X - Y, and CARRY = 1 when X >= Y (0 when X < Y; DIFF is then of no use).
+# Done as X + (Y with every bit flipped) + 1, word by word from the lowest:
+#     CARRY = 1                                         # the "+ 1"
+#     for k in 0, 1, 2, 3:
+#         A = (0xFFFF - Yk) + Xk + CARRY                # at most 0x1FFFF
+#         DIFFk = the lower half of A; CARRY = the upper half of A
+# X and Y are left as they were.
+@ SUBTRACT
+	lia 1; putA CARRY                                            # CARRY = 1
+	getA ALL_ONES; getB Y0; sub; getB X0; sum; getB CARRY; sum; putA DIFF0; keepcarry CARRY # word 0: DIFF0 = (0xFFFF - Y0) + X0 + carry
+	getA ALL_ONES; getB Y1; sub; getB X1; sum; getB CARRY; sum; putA DIFF1; keepcarry CARRY # word 1
+	getA ALL_ONES; getB Y2; sub; getB X2; sum; getB CARRY; sum; putA DIFF2; keepcarry CARRY # word 2
+	getA ALL_ONES; getB Y3; sub; getB X3; sum; getB CARRY; sum; putA DIFF3; keepcarry CARRY # word 3: its carry is 1 when X >= Y
+	ret
+
+# ---- Powers of ten for the decimal digits: 10^14 down to 1, four words each, lowest first; then 0 ----
+origin 0x1E00
+0x4000; 0x107A; 0x5AF3; 0x0000    # 100000000000000
+0xA000; 0x4E72; 0x0918; 0x0000    # 10000000000000
+0x1000; 0xD4A5; 0x00E8; 0x0000    # 1000000000000
+0xE800; 0x4876; 0x0017; 0x0000    # 100000000000
+0xE400; 0x540B; 0x0002; 0x0000    # 10000000000
+0xCA00; 0x3B9A; 0x0000; 0x0000    # 1000000000
+0xE100; 0x05F5; 0x0000; 0x0000    # 100000000
+0x9680; 0x0098; 0x0000; 0x0000    # 10000000
+0x4240; 0x000F; 0x0000; 0x0000    # 1000000
+0x86A0; 0x0001; 0x0000; 0x0000    # 100000
+0x2710; 0x0000; 0x0000; 0x0000    # 10000
+0x03E8; 0x0000; 0x0000; 0x0000    # 1000
+0x0064; 0x0000; 0x0000; 0x0000    # 100
+0x000A; 0x0000; 0x0000; 0x0000    # 10
+0x0001; 0x0000; 0x0000; 0x0000    # 1
+0
+
+
+
+# ---- The devices: 576 lines, then 0xFFFF ----
+origin 0x2000
+9450; 11576; 461; 7319; 7673; 9239; 0xFFFF    # nzm: rdg art kvn ljd nrj
+10704; 7074; 4003; 9045; 331; 0xFFFF    # pvs: kmc fxz njx amt
+3321; 15703; 5751; 7427; 0xFFFF    # ext: xfz inf kzr
+5320; 6496; 16480; 14475; 0xFFFF    # hwq: jpw yjw vkt
+16397; 15386; 14224; 4994; 0xFFFF    # ygr: wtu vbc hkc
+4366; 13775; 8631; 16954; 0xFFFF    # gly: ujv mtz zcc
+921; 987; 10453; 0xFFFF    # bjl: blz pmb
+1839; 13633; 6818; 0xFFFF    # cst: uej kcg
+17338; 2522; 13621; 3579; 12466; 11284; 16028; 16437; 16283; 14933; 4769; 16049; 1803; 3638; 2745; 10372; 12526; 3347; 1767; 4473; 9370; 6337; 6893; 0xFFFF    # zqw: dta udx fhr slm qsa xsm yif ych wcj hbl xth crj fjy ebp piy snu eyt cpz gqb nwk jjt kfd
+13479; 12152; 14926; 17402; 6211; 3133; 15586; 13936; 1476; 8290; 13971; 4611; 5523; 17427; 0xFFFF    # tyl: rzk wcc zti jex eqn xbm uqa ceu mgw urj gvj iel zuh
+7732; 217; 0xFFFF    # llk: aij
+11542; 11962; 0xFFFF    # rby: rsc
+14872; 11496; 1150; 0xFFFF    # waa: rae bsg
+11564; 461; 7319; 9239; 0xFFFF    # rcu: art kvn nrj
+12293; 2475; 13211; 0xFFFF    # sev: drf tod
+13269; 16304; 4042; 0xFFFF    # tqj: ydc fzm
+2823; 15848; 10504; 5827; 0xFFFF    # eep: xlo poa iqd
+15566; 8026; 15627; 10861; 0xFFFF    # xas: lws xdb qbt
+1488; 14171; 0xFFFF    # cfg: uzb
+734; 6089; 17302; 9891; 0xFFFF    # bcg: jaf zpm oql
+17322; 16022; 5216; 0xFFFF    # zqg: xsg hsq
+13261; 14406; 17190; 13479; 5077; 0xFFFF    # tqb: vic zle tyl hnh
+15048; 2408; 2986; 6716; 0xFFFF    # wgu: doq ekw jyi
+8895; 7433; 7983; 13494; 5509; 0xFFFF    # ned: kzx lvb tza idx
+14709; 4360; 12046; 10551; 9974; 0xFFFF    # vtt: gls rvi ppv otq
+7720; 15012; 11888; 217; 0xFFFF    # lky: wfk rpg aij
+14926; 10758; 17015; 1177; 0xFFFF    # wcc: pxu zel bth
+7873; 9045; 331; 7074; 4003; 9870; 0xFFFF    # lqv: njx amt kmc fxz opq
+7543; 4994; 16888; 15386; 14224; 0xFFFF    # led: hkc yzo wtu vbc
+14474; 1506; 17423; 0xFFFF    # vks: cfy zud
+4794; 7433; 7983; 13494; 0xFFFF    # hck: kzx lvb tza
+7804; 8072; 0xFFFF    # loe: lym
+17174; 11440; 0xFFFF    # zko: qya
+13211; 9234; 3999; 0xFFFF    # tod: nre fxv
+3999; 3643; 2970; 8436; 15574; 0xFFFF    # fxv: fkd ekg mmm xba
+11059; 5255; 3643; 2970; 8436; 15574; 0xFFFF    # qjj: hud fkd ekg mmm xba
+12424; 16608; 14481; 0xFFFF    # sjw: you vkz
+10487; 5320; 8495; 16324; 0xFFFF    # pnj: hwq mot ydw
+16323; 7429; 12645; 14768; 0xFFFF    # ydv: kzt ssj vwa
+7560; 10861; 0xFFFF    # leu: qbt
+7683; 11549; 3714; 0xFFFF    # ljn: rcf fmw
+7304; 13479; 5077; 5444; 14406; 0xFFFF    # kuy: tyl hnh ibk vic
+3371; 14648; 14768; 0xFFFF    # ezr: vrk vwa
+10287; 14211; 0xFFFF    # pfr: vap
+17304; 12395; 12305; 13435; 9545; 0xFFFF    # zpo: sit sfh twt odd
+8415; 7074; 4003; 0xFFFF    # mlr: kmc fxz
+16324; 6496; 16480; 10322; 14475; 0xFFFF    # ydw: jpw yjw pha vkt
+13341; 921; 4994; 0xFFFF    # ttd: bjl hkc
+11661; 17423; 2687; 0xFFFF    # rgn: zud dzj
+12526; 5281; 7669; 0xFFFF    # snu: hvd liz
+14224; 10453; 8447; 0xFFFF    # vbc: pmb mmx
+5611; 5444; 14406; 0xFFFF    # ihv: ibk vic
+14360; 5509; 0xFFFF    # vgi: idx
+12064; 3643; 0xFFFF    # rwa: fkd
+12691; 16875; 5016; 0xFFFF    # sud: yzb hky
+3563; 6546; 8555; 10548; 0xFFFF    # fhb: jru mrb pps
+3856; 1315; 12728; 3375; 14664; 0xFFFF    # fsi: byp svo ezv vsa
+3643; 11865; 7316; 2250; 17483; 14486; 9256; 10071; 15497; 0xFFFF    # fkd: roj kvk dio zwl vle nsa oxj wyb
+1506; 3524; 10704; 16734; 0xFFFF    # cfy: ffo pvs ytq
+8834; 10003; 0xFFFF    # nbu: out
+7898; 5804; 5732; 5192; 0xFFFF    # lru: ipg imm hrs
+10022; 17190; 5077; 0xFFFF    # ovm: zle hnh
+11970; 8421; 0xFFFF    # rsk: mlx
+9844; 1830; 0xFFFF    # ooq: csk
+2866; 14171; 6089; 9891; 11239; 0xFFFF    # egg: uzb jaf oql qqh
+7902; 11496; 0xFFFF    # lry: rae
+17339; 13417; 16182; 12031; 0xFFFF    # zqx: twb xyk rut
+1137; 6982; 1533; 0xFFFF    # brt: kio cgz
+8582; 8436; 2970; 5255; 3643; 0xFFFF    # msc: mmm ekg hud fkd
+7433; 4129; 282; 5076; 0xFFFF    # kzx: gcv akw hng
+13417; 3463; 11726; 12424; 0xFFFF    # twb: fdf rja sjw
+14396; 12775; 0xFFFF    # vhs: sxj
+3463; 14481; 5827; 0xFFFF    # fdf: vkz iqd
+14998; 14377; 4360; 9974; 0xFFFF    # wew: vgz gls otq
+1543; 7173; 15778; 0xFFFF    # chj: kpx xiw
+10940; 2538; 16027; 11635; 0xFFFF    # qeu: dtq xsl rfn
+11635; 10944; 13261; 3354; 3627; 0xFFFF    # rfn: qey tqb eza fjn
+15539; 16608; 10504; 15848; 0xFFFF    # wzr: you poa xlo
+4261; 16021; 6650; 211; 10940; 0xFFFF    # ghx: xsf jvu aid qeu
+17354; 13633; 5398; 0xFFFF    # zrm: uej hzq
+17427; 7365; 14731; 12393; 0xFFFF    # zuh: kxh vup sir
+9207; 8555; 12893; 10548; 4316; 0xFFFF    # nqd: mrb tbx pps gka
+17115; 9045; 4003; 331; 9870; 0xFFFF    # zih: njx fxz amt opq
+8966; 4032; 17545; 4105; 0xFFFF    # ngw: fzc zyv gbx
+10217; 7307; 0xFFFF    # pcz: kvb
+17519; 5076; 4129; 0xFFFF    # zxv: hng gcv
+7919; 1784; 10287; 5441; 0xFFFF    # lsp: cqq pfr ibh
+10322; 10504; 14481; 5827; 16608; 0xFFFF    # pha: poa vkz iqd you
+9568; 10861; 8026; 0xFFFF    # oea: qbt lws
+7076; 225; 0xFFFF    # kme: air
+8811; 14199; 7173; 15778; 0xFFFF    # nax: vad kpx xiw
+11284; 734; 2866; 1488; 0xFFFF    # qsa: bcg egg cfg
+1371; 3295; 14998; 0xFFFF    # cat: ewt wew
+9045; 695; 3467; 9278; 1543; 15512; 3392; 5834; 10988; 9796; 6989; 10018; 2563; 0xFFFF    # njx: bat fdj nsw chj wyq fam iqk qgq omu kiv ovi dup
+11440; 755; 11059; 8481; 0xFFFF    # qya: bdb qjj mof
+13435; 10048; 0xFFFF    # twt: owm
+219; 331; 9045; 9870; 0xFFFF    # ail: amt njx opq
+4560; 10003; 0xFFFF    # gtk: out
+9995; 15647; 0xFFFF    # oul: xdv
+12138; 11134; 9291; 0xFFFF    # ryw: qmg ntj
+15313; 15316; 8968; 0xFFFF    # wqz: wrc ngy
+7663; 15539; 3463; 11726; 12424; 0xFFFF    # lit: wzr fdf rja sjw
+5444; 13971; 10391; 1500; 1476; 8290; 3133; 1370; 13936; 15586; 12152; 7275; 17402; 0xFFFF    # ibk: urj pjr cfs ceu mgw eqn cas uqa xbm rzk ktv zti
+11728; 17435; 11970; 0xFFFF    # rjc: zup rsk
+16283; 7720; 1923; 5706; 0xFFFF    # ych: lky cvz ilm
+5255; 11865; 16088; 5451; 5928; 16258; 0xFFFF    # hud: roj xuu ibr iua ybi
+13405; 6238; 5363; 2927; 11134; 9291; 0xFFFF    # tvp: jfy hyh eip qmg ntj
+5767; 11059; 755; 0xFFFF    # inv: qjj bdb
+16497; 12854; 17408; 10928; 0xFFFF    # ykn: tak zto qei
+3114; 14692; 2806; 11661; 0xFFFF    # epu: vtc edy rgn
+5383; 14304; 0xFFFF    # hzb: vee
+6496; 10504; 5827; 0xFFFF    # jpw: poa iqd
+13971; 13596; 4088; 10226; 16404; 924; 0xFFFF    # urj: ucy gbg pdi ygy bjo
+16258; 580; 0xFFFF    # ybi: awi
+14481; 3697; 14872; 2083; 2942; 4366; 5597; 0xFFFF    # vkz: fmf waa dcd eje gly ihh
+10548; 2909; 0xFFFF    # pps: ehx
+10861; 7074; 331; 0xFFFF    # qbt: kmc amt
+5928; 5899; 13302; 11614; 12366; 0xFFFF    # iua: isx trq res shq
+5523; 1177; 3205; 0xFFFF    # iel: bth eth
+5729; 8436; 3643; 2970; 0xFFFF    # imj: mmm fkd ekg
+5804; 5534; 16638; 0xFFFF    # ipg: iew ypy
+4042; 14716; 0xFFFF    # fzm: vua
+10372; 8895; 0xFFFF    # piy: ned
+9234; 8436; 2970; 5255; 0xFFFF    # nre: mmm ekg hud
+7316; 2030; 5016; 0xFFFF    # kvk: dac hky
+9239; 10003; 0xFFFF    # nrj: out
+13041; 5077; 13479; 5444; 17190; 14406; 0xFFFF    # thp: hnh tyl ibk zle vic
+5827; 15124; 3787; 5383; 3697; 7902; 2411; 14872; 2942; 8106; 8273; 0xFFFF    # iqd: wjs fpr hzb fmf lry dot waa eje lzu mgf
+7673; 10003; 0xFFFF    # ljd: out
+17190; 6211; 1370; 3133; 13936; 16510; 12152; 7275; 14926; 17402; 10391; 13971; 4611; 5523; 17427; 11782; 1476; 8290; 9646; 0xFFFF    # zle: jex cas eqn uqa yla rzk ktv wcc zti pjr urj gvj iel zuh rle ceu mgw oha
+17015; 15204; 5659; 0xFFFF    # zel: wmu ijr
+8106; 11496; 0xFFFF    # lzu: rae
+10307; 15848; 16608; 14481; 10504; 0xFFFF    # pgl: xlo you vkz poa
+929; 2927; 0xFFFF    # bjt: eip
+3758; 10563; 14346; 2475; 0xFFFF    # foo: pqh vfu drf
+8968; 6086; 15440; 0xFFFF    # ngy: jac wvw
+13183; 13225; 9844; 10780; 4064; 0xFFFF    # tnb: tor ooq pyq gai
+5534; 7560; 15076; 15566; 9568; 0xFFFF    # iew: leu whw xas oea
+17478; 15316; 8968; 3223; 0xFFFF    # zwg: wrc ngy etz
+12152; 7365; 1712; 8361; 12393; 0xFFFF    # rzk: kxh cnw mjp sir
+4003; 10988; 1137; 5276; 4077; 15512; 5834; 3392; 9796; 6989; 10018; 7088; 8811; 2563; 695; 8642; 3467; 9278; 0xFFFF    # fxz: qgq brt huy gav wyq iqk fam omu kiv ovi kmq nax dup bat muk fdj nsw
+15204; 946; 0xFFFF    # wmu: bkk
+1767; 16397; 0xFFFF    # cpz: ygr
+13590; 14481; 16608; 0xFFFF    # ucs: vkz you
+6370; 14045; 13041; 0xFFFF    # jla: uuf thp
+6089; 282; 5076; 4129; 0xFFFF    # jaf: akw hng gcv
+15921; 14406; 13479; 17190; 0xFFFF    # xoj: vic tyl zle
+1784; 2329; 14211; 0xFFFF    # cqq: dlp vap
+3524; 9870; 7074; 331; 4003; 0xFFFF    # ffo: opq kmc amt fxz
+13983; 14211; 2329; 11393; 0xFFFF    # urv: vap dlp qwf
+17043; 2030; 0xFFFF    # zfn: dac
+10109; 14406; 17190; 13479; 0xFFFF    # oyv: vic zle tyl
+11530; 10693; 4638; 6533; 0xFFFF    # rbm: pvh gwk jrh
+15857; 12046; 0xFFFF    # xlx: rvi
+5461; 2823; 16274; 0xFFFF    # icb: eep yby
+14717; 9045; 9870; 0xFFFF    # vub: njx opq
+11393; 4129; 282; 5076; 0xFFFF    # qwf: gcv akw hng
+3174; 3714; 0xFFFF    # esc: fmw
+13075; 4003; 331; 0xFFFF    # tix: fxz amt
+15497; 5016; 0xFFFF    # wyb: hky
+9891; 5076; 282; 0xFFFF    # oql: hng akw
+16510; 9069; 4889; 3140; 0xFFFF    # yla: nkv hgb equ
+17302; 5076; 4129; 0xFFFF    # zpm: hng gcv
+15574; 14019; 7313; 236; 12691; 17285; 17483; 16258; 10071; 7804; 15497; 2250; 9256; 14083; 14486; 0xFFFF    # xba: utf kvh ajc sud zov zwl ybi oxj loe wyb dio nsa uvr vle
+2173; 3223; 15316; 692; 0xFFFF    # dfp: etz wrc baq
+14211; 5076; 0xFFFF    # vap: hng
+11726; 14481; 5827; 10504; 16608; 15848; 0xFFFF    # rja: vkz iqd poa you xlo
+1150; 3750; 2429; 899; 0xFFFF    # bsg: fog dpl bip
+12318; 4105; 13364; 17545; 0xFFFF    # sfu: gbx tua zyv
+2703; 14716; 13183; 4730; 0xFFFF    # dzz: vua tnb gzy
+5281; 9123; 0xFFFF    # hvd: nmx
+8642; 929; 13405; 12138; 2671; 0xFFFF    # muk: bjt tvp ryw dyt
+1631; 14481; 5827; 10504; 0xFFFF    # ckt: vkz iqd poa
+14045; 5444; 17190; 5077; 13479; 14406; 0xFFFF    # uuf: ibk zle hnh tyl vic
+225; 10109; 0xFFFF    # air: oyv
+12466; 7267; 5281; 7669; 0xFFFF    # slm: ktn hvd liz
+13265; 9814; 5946; 8582; 0xFFFF    # tqf: onm ius msc
+11496; 899; 0xFFFF    # rae: bip
+11865; 17339; 9716; 10097; 11213; 0xFFFF    # roj: zqx ojs oyj qph
+3133; 13265; 10658; 4590; 0xFFFF    # eqn: tqf pty guo
+7427; 219; 13075; 0xFFFF    # kzr: ail tix
+16304; 4730; 13183; 0xFFFF    # ydc: gzy tnb
+5834; 11026; 9962; 11530; 0xFFFF    # iqk: qic ote rbm
+16027; 13261; 3627; 14116; 3354; 0xFFFF    # xsl: tqb fjn uwy eza
+11213; 16182; 7663; 0xFFFF    # qph: xyk lit
+12366; 17550; 8462; 16929; 13590; 0xFFFF    # shq: zza mnm zbd ucs
+6818; 10003; 0xFFFF    # kcg: out
+10563; 11949; 0xFFFF    # pqh: rrp
+16088; 11614; 0xFFFF    # xuu: res
+10957; 5216; 5550; 16022; 12845; 0xFFFF    # qfl: hsq ifm xsg tab
+4064; 9899; 674; 0xFFFF    # gai: oqt azy
+14716; 4977; 10780; 0xFFFF    # vua: hjl pyq
+12031; 11726; 0xFFFF    # rut: rja
+6211; 924; 0xFFFF    # jex: bjo
+1266; 11059; 0xFFFF    # bws: qjj
+3750; 3550; 16501; 3563; 4134; 0xFFFF    # fog: fgo ykr fhb gda
+5152; 5534; 2324; 16638; 0xFFFF    # hqe: iew dlk ypy
+14019; 8072; 0xFFFF    # utf: lym
+11239; 5076; 282; 0xFFFF    # qqh: hng akw
+4088; 12293; 12574; 3758; 0xFFFF    # gbg: sev spq foo
+7275; 12393; 7365; 14731; 1712; 8361; 0xFFFF    # ktv: sir kxh vup cnw mjp
+8931; 4129; 5076; 282; 0xFFFF    # nfn: gcv hng akw
+10928; 8966; 0xFFFF    # qei: ngw
+5192; 5534; 0xFFFF    # hrs: iew
+15076; 10861; 15627; 0xFFFF    # whw: qbt xdb
+11576; 10003; 0xFFFF    # rdg: out
+10453; 4129; 282; 5076; 0xFFFF    # pmb: gcv akw hng
+4129; 12648; 9082; 11685; 13373; 17034; 7324; 13007; 17322; 890; 7898; 13429; 4348; 16497; 10957; 6596; 2676; 0xFFFF    # gcv: ssm nli rhl tuj zfe kvs tgh zqg big lru twn glg ykn qfl jts dyy
+9974; 15574; 8436; 0xFFFF    # otq: xba mmm
+12574; 10563; 13211; 0xFFFF    # spq: pqh tod
+4730; 4064; 9844; 4977; 0xFFFF    # gzy: gai ooq hjl
+6650; 2538; 11635; 0xFFFF    # jvu: dtq rfn
+12301; 13970; 7698; 0xFFFF    # sfd: uri lkc
+5899; 13590; 8462; 17550; 16929; 0xFFFF    # isx: ucs mnm zza zbd
+14228; 8834; 14425; 0xFFFF    # vbg: nbu viv
+15664; 1672; 2806; 0xFFFF    # xem: cmi edy
+5541; 2703; 11962; 4042; 0xFFFF    # ifd: dzz rsc fzm
+7088; 11589; 0xFFFF    # kmq: rdt
+13005; 6716; 0xFFFF    # tgf: jyi
+305; 10504; 14481; 16608; 0xFFFF    # alt: poa vkz you
+4105; 11474; 8415; 11274; 4018; 0xFFFF    # gbx: qzi mlr qrq fyo
+10422; 13953; 7919; 0xFFFF    # pkw: uqr lsp
+13970; 5441; 10287; 13983; 0xFFFF    # uri: ibh pfr urv
+13596; 12293; 12574; 0xFFFF    # ucy: sev spq
+2217; 17190; 5077; 13479; 14406; 0xFFFF    # dhh: zle hnh tyl vic
+10658; 8582; 5946; 6863; 9814; 0xFFFF    # pty: msc ius kdz onm
+3392; 6455; 0xFFFF    # fam: joh
+7429; 9450; 0xFFFF    # kzt: nzm
+5550; 12775; 3321; 0xFFFF    # ifm: sxj ext
+5659; 12064; 4743; 946; 0xFFFF    # ijr: rwa hal bkk
+12854; 3529; 0xFFFF    # tak: fft
+9814; 3643; 2970; 0xFFFF    # onm: fkd ekg
+2942; 11542; 13269; 405; 0xFFFF    # eje: rby tqj app
+9256; 11614; 12366; 13302; 0xFFFF    # nsa: res shq trq
+16182; 15539; 3463; 12424; 0xFFFF    # xyk: wzr fdf sjw
+11274; 331; 0xFFFF    # qrq: amt
+16501; 10548; 4316; 8555; 6546; 0xFFFF    # ykr: pps gka mrb jru
+14116; 14406; 17190; 13479; 5077; 0xFFFF    # uwy: vic zle tyl hnh
+16404; 16424; 12574; 0xFFFF    # ygy: yhs spq
+16021; 11635; 2538; 16027; 0xFFFF    # xsf: rfn dtq xsl
+8003; 14045; 13041; 0xFFFF    # lvv: uuf thp
+1476; 17015; 0xFFFF    # ceu: zel
+14304; 16323; 15719; 0xFFFF    # vee: ydv xgp
+8026; 9870; 4003; 9045; 7074; 0xFFFF    # lws: opq fxz njx kmc
+12876; 1266; 5767; 0xFFFF    # tbg: bws inv
+3488; 7074; 4003; 9045; 0xFFFF    # fee: kmc fxz njx
+8631; 3371; 17054; 0xFFFF    # mtz: ezr zfy
+5276; 13405; 2671; 0xFFFF    # huy: tvp dyt
+5451; 3856; 13981; 580; 0xFFFF    # ibr: fsi urt awi
+11639; 12424; 0xFFFF    # rfr: sjw
+9716; 12031; 11639; 0xFFFF    # ojs: rut rfr
+13429; 5732; 5152; 5192; 0xFFFF    # twn: imm hqe hrs
+16480; 15848; 14481; 10504; 0xFFFF    # yjw: xlo vkz poa
+14345; 7429; 12645; 2886; 0xFFFF    # vft: kzt ssj eha
+692; 15440; 6086; 16612; 0xFFFF    # baq: wvw jac yoy
+4018; 331; 7074; 4003; 0xFFFF    # fyo: amt kmc fxz
+13981; 12728; 1315; 14664; 0xFFFF    # urt: svo byp vsa
+12209; 5076; 0xFFFF    # sbp: hng
+6989; 14978; 7076; 0xFFFF    # kiv: wec kme
+12393; 11931; 1371; 17065; 10730; 0xFFFF    # sir: rqx cat zgj pws
+695; 4261; 0xFFFF    # bat: ghx
+10730; 12812; 14709; 15857; 0xFFFF    # pws: syu vtt xlx
+4638; 17242; 6370; 8003; 4452; 0xFFFF    # gwk: zne jla lvv gpg
+7983; 5076; 4129; 0xFFFF    # lvb: hng gcv
+12731; 17338; 5760; 13695; 0xFFFF    # svr: zqw ino ugt
+2408; 3811; 7683; 9247; 0xFFFF    # doq: fqp ljn nrr
+6716; 3174; 9247; 0xFFFF    # jyi: esc nrr
+4715; 15703; 0xFFFF    # gzj: xfz
+4889; 17174; 0xFFFF    # hgb: zko
+13364; 10377; 8415; 11274; 4018; 0xFFFF    # tua: pjd mlr qrq fyo
+10551; 5255; 3643; 15574; 0xFFFF    # ppv: hud fkd xba
+1256; 3114; 15664; 0xFFFF    # bwi: epu xem
+16734; 331; 7074; 9870; 0xFFFF    # ytq: amt kmc opq
+217; 282; 0xFFFF    # aij: akw
+823; 15664; 9129; 0xFFFF    # bfr: xem nnd
+7324; 12845; 0xFFFF    # kvs: tab
+11782; 10658; 0xFFFF    # rle: pty
+2909; 10003; 0xFFFF    # ehx: out
+2250; 580; 13981; 3856; 0xFFFF    # dio: awi urt fsi
+1803; 4794; 14360; 8895; 0xFFFF    # crj: hck vgi ned
+11317; 2970; 3643; 15574; 8436; 0xFFFF    # qth: ekg fkd xba mmm
+16022; 3321; 0xFFFF    # xsg: ext
+17065; 14709; 14998; 12812; 0xFFFF    # zgj: vtt wew syu
+4994; 8447; 987; 0xFFFF    # hkc: mmx blz
+15296; 4129; 282; 0xFFFF    # wqi: gcv akw
+13775; 14345; 0xFFFF    # ujv: vft
+10048; 9045; 4003; 331; 0xFFFF    # owm: njx fxz amt
+3295; 9974; 12046; 4360; 0xFFFF    # ewt: otq rvi gls
+2986; 3174; 7683; 9247; 0xFFFF    # ekw: esc ljn nrr
+17402; 4590; 0xFFFF    # zti: guo
+16033; 13633; 0xFFFF    # xsr: uej
+1370; 3205; 0xFFFF    # cas: eth
+16561; 908; 0xFFFF    # ymz: biy
+7319; 10003; 0xFFFF    # kvn: out
+3714; 8834; 15647; 0xFFFF    # fmw: nbu xdv
+5509; 4129; 5076; 0xFFFF    # idx: gcv hng
+15586; 16978; 4889; 9069; 0xFFFF    # xbm: zda hgb nkv
+8495; 10322; 6496; 0xFFFF    # mot: pha jpw
+4316; 906; 4560; 0xFFFF    # gka: biw gtk
+5016; 10307; 9755; 0xFFFF    # hky: pgl olf
+10780; 9899; 0xFFFF    # pyq: oqt
+1177; 5659; 0xFFFF    # bth: ijr
+2201; 14692; 11661; 0xFFFF    # dgr: vtc rgn
+10226; 16424; 12574; 0xFFFF    # pdi: yhs spq
+14083; 5016; 2030; 0xFFFF    # uvr: hky dac
+11575; 10003; 0xFFFF    # rdf: out
+8273; 13269; 11542; 0xFFFF    # mgf: tqj rby
+1712; 11931; 17065; 1371; 0xFFFF    # cnw: rqx zgj cat
+16929; 5827; 15848; 0xFFFF    # zbd: iqd xlo
+1549; 13479; 17190; 0xFFFF    # chp: tyl zle
+1452; 8966; 12318; 3529; 0xFFFF    # cdw: ngw sfu fft
+14648; 6715; 11564; 0xFFFF    # vrk: jyh rcu
+8421; 14717; 0xFFFF    # mlx: vub
+13373; 2201; 15664; 9129; 3114; 0xFFFF    # tuj: dgr xem nnd epu
+6533; 4452; 8003; 0xFFFF    # jrh: gpg lvv
+4611; 1119; 17015; 0xFFFF    # gvj: brb zel
+674; 10003; 0xFFFF    # azy: out
+11474; 4003; 331; 9045; 9870; 0xFFFF    # qzi: fxz amt njx opq
+6337; 7543; 13341; 0xFFFF    # jjt: led ttd
+15796; 8495; 16324; 0xFFFF    # xjo: mot ydw
+16274; 15848; 16608; 5827; 14481; 0xFFFF    # yby: xlo you iqd vkz
+331; 1137; 5276; 4077; 0xFFFF    # amt: brt huy gav
+3579; 14360; 8895; 0xFFFF    # fhr: vgi ned
+924; 16424; 11700; 0xFFFF    # bjo: yhs ria
+1923; 11888; 10231; 15296; 0xFFFF    # cvz: rpg pdn wqi
+2522; 13546; 7543; 11896; 0xFFFF    # dta: uba led rpo
+13953; 5441; 10287; 13983; 1784; 0xFFFF    # uqr: ibh pfr urv cqq
+11899; 5444; 0xFFFF    # rpr: ibk
+11931; 14709; 12812; 3295; 0xFFFF    # rqx: vtt syu ewt
+5732; 5534; 0xFFFF    # imm: iew
+946; 5255; 2970; 0xFFFF    # bkk: hud ekg
+4769; 7267; 7669; 0xFFFF    # hbl: ktn liz
+6546; 11575; 0xFFFF    # jru: rdf
+15627; 9870; 0xFFFF    # xdb: opq
+6086; 17354; 13451; 1839; 16033; 0xFFFF    # jac: zrm txj cst xsr
+5363; 10022; 2217; 0xFFFF    # hyh: ovm dhh
+580; 12728; 380; 3375; 0xFFFF    # awi: svo aoq ezv
+3347; 10422; 12301; 17091; 0xFFFF    # eyt: pkw sfd zhj
+2886; 9450; 0xFFFF    # eha: nzm
+10097; 12031; 16182; 7663; 13417; 11639; 0xFFFF    # oyj: rut xyk lit twb rfr
+12812; 9974; 10551; 12046; 0xFFFF    # syu: otq ppv rvi
+7267; 2182; 15845; 12209; 8931; 9123; 0xFFFF    # ktn: dfy xll sbp nfn nmx
+1607; 15921; 7304; 10109; 11899; 0xFFFF    # cjv: xoj kuy oyv rpr
+17285; 17339; 9716; 10097; 11213; 0xFFFF    # zov: zqx ojs oyj qph
+9247; 9995; 14228; 3714; 0xFFFF    # nrr: oul vbg fmw
+11888; 5076; 0xFFFF    # rpg: hng
+12728; 152; 0xFFFF    # svo: afw
+2182; 282; 0xFFFF    # dfy: akw
+13494; 282; 5076; 0xFFFF    # tza: akw hng
+15124; 2173; 15313; 17478; 0xFFFF    # wjs: dfp wqz zwg
+10988; 929; 0xFFFF    # qgq: bjt
+15212; 5320; 8495; 16324; 0xFFFF    # wnc: hwq mot ydw
+9069; 12876; 168; 17174; 0xFFFF    # nkv: tbg agm zko
+8972; 6650; 16021; 211; 0xFFFF    # nhc: jvu xsf aid
+9646; 16978; 7420; 3140; 0xFFFF    # oha: zda kzk equ
+11700; 2475; 13211; 0xFFFF    # ria: drf tod
+3354; 14406; 0xFFFF    # eza: vic
+15703; 7873; 0xFFFF    # xfz: lqv
+2159; 15048; 3703; 0xFFFF    # dfb: wgu fml
+168; 1266; 11440; 3678; 0xFFFF    # agm: bws qya flm
+1533; 225; 10328; 0xFFFF    # cgz: air phg
+755; 3643; 0xFFFF    # bdb: fkd
+9129; 2806; 11661; 14474; 1672; 0xFFFF    # nnd: edy rgn vks cmi
+4134; 12893; 6546; 4316; 10548; 0xFFFF    # gda: tbx jru gka pps
+9796; 7173; 0xFFFF    # omu: kpx
+987; 282; 4129; 0xFFFF    # blz: akw gcv
+2565; 17304; 11970; 0xFFFF    # dur: zpo rsk
+1535; 2173; 0xFFFF    # chb: dfp
+2563; 8972; 6455; 0xFFFF    # dup: nhc joh
+5441; 17519; 0xFFFF    # ibh: zxv
+14768; 6715; 9450; 11564; 0xFFFF    # vwa: jyh nzm rcu
+14978; 10328; 225; 1607; 0xFFFF    # wec: phg air cjv
+4032; 4018; 11474; 10377; 8415; 0xFFFF    # fzc: fyo qzi pjd mlr
+13936; 13596; 10226; 16404; 924; 0xFFFF    # uqa: ucy pdi ygy bjo
+12845; 3321; 4715; 16625; 0xFFFF    # tab: ext gzj ypl
+236; 9716; 10097; 11213; 0xFFFF    # ajc: ojs oyj qph
+4818; 13479; 17190; 5444; 0xFFFF    # hdi: tyl zle ibk
+8290; 16404; 924; 4088; 0xFFFF    # mgw: ygy bjo gbg
+7927; 16608; 10504; 14481; 0xFFFF    # lsx: you poa vkz
+17091; 7919; 13970; 7698; 0xFFFF    # zhj: lsp uri lkc
+2676; 5152; 5732; 0xFFFF    # dyy: hqe imm
+14731; 10730; 0xFFFF    # vup: pws
+5946; 8436; 15574; 0xFFFF    # ius: mmm xba
+11949; 5255; 3643; 15574; 0xFFFF    # rrp: hud fkd xba
+4743; 3643; 2970; 8436; 15574; 0xFFFF    # hal: fkd ekg mmm xba
+14199; 8023; 0xFFFF    # vad: lwp
+10504; 2083; 2411; 3697; 14872; 1535; 8106; 4366; 7151; 5597; 3787; 15314; 4385; 2940; 0xFFFF    # poa: dcd dot fmf waa chb lzu gly kpb ihh fpr wra gmr ejc
+2671; 5363; 0xFFFF    # dyt: hyh
+16954; 15719; 16323; 17054; 0xFFFF    # zcc: xgp ydv zfy
+13769; 13479; 14406; 0xFFFF    # ujp: tyl vic
+10071; 13327; 8072; 0xFFFF    # oxj: tsp lym
+10391; 14731; 0xFFFF    # pjr: vup
+13451; 13633; 6818; 5398; 0xFFFF    # txj: uej kcg hzq
+11799; 3750; 2429; 899; 0xFFFF    # rlv: fog dpl bip
+10743; 13327; 0xFFFF    # pxf: tsp
+12775; 7427; 0xFFFF    # sxj: kzr
+13225; 9899; 0xFFFF    # tor: oqt
+11134; 4818; 10022; 5611; 0xFFFF    # qmg: hdi ovm ihv
+1500; 1712; 14731; 8361; 12393; 0xFFFF    # cfs: cnw vup mjp sir
+16612; 17354; 1839; 13451; 0xFFFF    # yoy: zrm cst txj
+10693; 4452; 8003; 6370; 17242; 0xFFFF    # pvh: gpg lvv jla zne
+11026; 10693; 4638; 10217; 6533; 0xFFFF    # qic: pvh gwk pcz jrh
+15314; 3703; 13005; 0xFFFF    # wra: fml tgf
+15080; 10693; 10217; 0xFFFF    # wia: pvh pcz
+15440; 16033; 1839; 0xFFFF    # wvw: xsr cst
+10328; 7304; 11899; 0xFFFF    # phg: kuy rpr
+13621; 734; 0xFFFF    # udx: bcg
+9370; 11896; 7543; 13341; 13546; 0xFFFF    # nwk: rpo led ttd uba
+152; 7927; 16274; 0xFFFF    # afw: lsx yby
+3205; 9059; 5659; 15204; 0xFFFF    # eth: nkl ijr wmu
+15848; 7263; 2159; 14872; 3697; 15124; 2083; 4385; 0xFFFF    # xlo: ktj dfb waa fmf wjs dcd gmr
+17435; 12395; 9545; 8421; 13435; 0xFFFF    # zup: sit odd mlx twt
+13546; 15386; 921; 14224; 16888; 0xFFFF    # uba: wtu bjl vbc yzo
+4473; 7543; 13546; 13341; 0xFFFF    # gqb: led uba ttd
+9545; 3488; 0xFFFF    # odd: fee
+11614; 1631; 0xFFFF    # res: ckt
+16625; 5751; 0xFFFF    # ypl: inf
+16638; 12409; 15076; 0xFFFF    # ypy: sjh whw
+13327; 10487; 15212; 15796; 0xFFFF    # tsp: pnj wnc xjo
+2329; 4129; 0xFFFF    # dlp: gcv
+2324; 7560; 15566; 15076; 0xFFFF    # dlk: leu xas whw
+9278; 11589; 9962; 15080; 11530; 0xFFFF    # nsw: rdt ote wia rbm
+14664; 152; 10223; 5461; 0xFFFF    # vsa: afw pdf icb
+2538; 14116; 3354; 10944; 13261; 0xFFFF    # dtq: uwy eza qey tqb
+10231; 282; 4129; 0xFFFF    # pdn: akw gcv
+5597; 15048; 13005; 0xFFFF    # ihh: wgu tgf
+2475; 5729; 0xFFFF    # drf: imj
+2934; 16304; 2703; 0xFFFF    # eiw: ydc dzz
+5077; 8290; 1500; 1476; 9646; 13971; 10391; 14926; 12152; 16510; 1370; 3133; 15586; 0xFFFF    # hnh: mgw cfs ceu oha urj pjr wcc rzk yla cas eqn xbm
+13695; 2522; 1803; 2745; 3579; 13621; 3347; 16437; 16283; 1767; 14933; 4473; 4769; 16049; 9370; 6337; 6893; 0xFFFF    # ugt: dta crj ebp fhr udx eyt yif ych cpz wcj gqb hbl xth nwk jjt kfd
+14406; 17427; 17402; 11782; 6211; 16510; 1476; 7275; 5523; 0xFFFF    # vic: zuh zti rle jex yla ceu ktv iel
+3638; 5706; 0xFFFF    # fjy: ilm
+13302; 17550; 8462; 0xFFFF    # trq: zza mnm
+12648; 3114; 0xFFFF    # ssm: epu
+6893; 2866; 16955; 1488; 0xFFFF    # kfd: egg zcd cfg
+3703; 2408; 6716; 0xFFFF    # fml: doq jyi
+2806; 1506; 0xFFFF    # edy: cfy
+17550; 10504; 5827; 14481; 16608; 0xFFFF    # zza: poa iqd vkz you
+6715; 11576; 7673; 7319; 9239; 0xFFFF    # jyh: rdg ljd kvn nrj
+16028; 7732; 7720; 0xFFFF    # xsm: llk lky
+4977; 9899; 1830; 674; 0xFFFF    # hjl: oqt csk azy
+8462; 16608; 0xFFFF    # mnm: you
+1119; 5659; 9059; 0xFFFF    # brb: ijr nkl
+380; 152; 10223; 5461; 0xFFFF    # aoq: afw pdf icb
+6369; 14406; 13479; 17190; 5444; 0xFFFF    # jkz: vic tyl zle ibk
+17408; 12318; 3529; 0xFFFF    # zto: sfu fft
+8447; 5076; 282; 4129; 0xFFFF    # mmx: hng akw gcv
+3467; 1533; 6982; 14978; 0xFFFF    # fdj: cgz kio wec
+12046; 5255; 0xFFFF    # rvi: hud
+5076; 11260; 4348; 1256; 2676; 7324; 1879; 890; 12648; 9082; 0xFFFF    # hng: qrc glg bwi dyy kvs cuh big ssm nli
+7313; 9716; 10097; 0xFFFF    # kvh: ojs oyj
+7074; 15512; 5276; 6989; 3392; 3467; 0xFFFF    # kmc: wyq huy kiv fam fdj
+890; 908; 2565; 11728; 0xFFFF    # big: biy dur rjc
+8072; 15796; 15212; 0xFFFF    # lym: xjo wnc
+14475; 15848; 16608; 14481; 5827; 0xFFFF    # vkt: xlo you vkz iqd
+9899; 10003; 0xFFFF    # oqt: out
+16608; 7151; 5597; 8273; 4366; 2942; 1535; 7902; 2159; 2940; 15124; 3787; 0xFFFF    # you: kpb ihh mgf gly eje chb lry dfb ejc wjs fpr
+17054; 7429; 2886; 0xFFFF    # zfy: kzt eha
+2927; 10022; 13769; 0xFFFF    # eip: ovm ujp
+16437; 1488; 2866; 16955; 734; 0xFFFF    # yif: cfg egg zcd bcg
+17483; 11213; 10097; 0xFFFF    # zwl: qph oyj
+10223; 2823; 7927; 0xFFFF    # pdf: eep lsx
+16090; 9045; 7074; 4003; 0xFFFF    # xuw: njx kmc fxz
+9059; 12064; 4743; 0xFFFF    # nkl: rwa hal
+10691; 15212; 0xFFFF    # pvf: wnc
+3140; 12876; 17174; 0xFFFF    # equ: tbg zko
+6596; 2201; 0xFFFF    # jts: dgr
+9082; 5732; 5152; 0xFFFF    # nli: imm hqe
+10018; 4261; 6455; 0xFFFF    # ovi: ghx joh
+502; 10003; 0xFFFF    # ati: out
+12395; 14717; 0xFFFF    # sit: vub
+8883; 12366; 11614; 5899; 0xFFFF    # ndr: shq res isx
+7307; 14045; 6369; 0xFFFF    # kvb: uuf jkz
+15719; 7429; 12645; 2886; 14768; 0xFFFF    # xgp: kzt ssj eha vwa
+9123; 4129; 282; 0xFFFF    # nmx: gcv akw
+5760; 2745; 9370; 3579; 12466; 12526; 3347; 16283; 14933; 2522; 4473; 0xFFFF    # ino: ebp nwk fhr slm snu eyt ych wcj dta gqb
+7151; 15313; 2173; 0xFFFF    # kpb: wqz dfp
+405; 4042; 2703; 0xFFFF    # app: fzm dzz
+12305; 3488; 14717; 0xFFFF    # sfh: fee vub
+15845; 5076; 0xFFFF    # xll: hng
+14692; 2687; 0xFFFF    # vtc: dzj
+7669; 2182; 15845; 12209; 8931; 9123; 0xFFFF    # liz: dfy xll sbp nfn nmx
+7365; 11931; 1371; 0xFFFF    # kxh: rqx cat
+4077; 2671; 12138; 929; 0xFFFF    # gav: dyt ryw bjt
+8555; 4560; 502; 906; 0xFFFF    # mrb: gtk ati biw
+5706; 15296; 0xFFFF    # ilm: wqi
+9962; 4638; 10693; 0xFFFF    # ote: gwk pvh
+2030; 10307; 305; 0xFFFF    # dac: pgl alt
+2940; 8631; 13775; 16954; 0xFFFF    # ejc: mtz ujv zcc
+906; 10003; 0xFFFF    # biw: out
+4348; 908; 2565; 11728; 0xFFFF    # glg: biy dur rjc
+899; 3563; 4134; 16501; 0xFFFF    # bip: fhb gda ykr
+3678; 8481; 11059; 11317; 755; 0xFFFF    # flm: mof qjj qth bdb
+15316; 6086; 0xFFFF    # wrc: jac
+7420; 12876; 0xFFFF    # kzk: tbg
+10944; 5444; 0xFFFF    # qey: ibk
+15778; 8023; 9310; 6936; 1549; 0xFFFF    # xiw: lwp nuc kgu chp
+4590; 5946; 0xFFFF    # guo: ius
+16888; 10453; 0xFFFF    # yzo: pmb
+3529; 13364; 17545; 4032; 0xFFFF    # fft: tua zyv fzc
+6936; 17190; 0xFFFF    # kgu: zle
+4452; 6369; 13041; 0xFFFF    # gpg: jkz thp
+15647; 10003; 0xFFFF    # xdv: out
+17034; 11728; 908; 0xFFFF    # zfe: rjc biy
+6424; 5550; 5216; 16022; 0xFFFF    # jnc: ifm hsq xsg
+908; 17435; 11970; 17304; 0xFFFF    # biy: zup rsk zpo
+14486; 8072; 10691; 0xFFFF    # vle: lym pvf
+2687; 16090; 17115; 16734; 10704; 0xFFFF    # dzj: xuw zih ytq pvs
+11685; 1452; 17408; 0xFFFF    # rhl: cdw zto
+282; 7324; 13007; 823; 17322; 9082; 6424; 12648; 13373; 11685; 17034; 1879; 10957; 2676; 1256; 16497; 11260; 890; 16561; 7898; 13429; 0xFFFF    # akw: kvs tgh bfr zqg nli jnc ssm tuj rhl zfe cuh qfl dyy bwi ykn qrc big ymz lru twn
+16875; 305; 0xFFFF    # yzb: alt
+5398; 10003; 0xFFFF    # hzq: out
+11962; 4730; 13183; 14716; 0xFFFF    # rsc: gzy tnb vua
+2745; 734; 1488; 0xFFFF    # ebp: bcg cfg
+2411; 11799; 1150; 11496; 0xFFFF    # dot: rlv bsg rae
+9310; 14406; 0xFFFF    # nuc: vic
+8436; 15497; 7804; 9256; 14486; 16258; 5928; 8883; 12691; 17285; 17043; 10743; 11865; 16088; 7313; 14019; 0xFFFF    # mmm: wyb loe nsa vle ybi iua ndr sud zov zfn pxf roj xuu kvh utf
+13007; 14396; 12845; 16022; 0xFFFF    # tgh: vhs tab xsg
+15012; 282; 4129; 0xFFFF    # wfk: akw gcv
+1315; 152; 10223; 5461; 0xFFFF    # byp: afw pdf icb
+5751; 219; 7873; 0xFFFF    # inf: ail lqv
+2083; 14304; 16954; 0xFFFF    # dcd: vee zcc
+3223; 16612; 0xFFFF    # etz: yoy
+211; 16027; 0xFFFF    # aid: xsl
+8481; 2970; 3643; 8436; 0xFFFF    # mof: ekg fkd mmm
+6982; 1607; 10328; 0xFFFF    # kio: cjv phg
+12409; 8026; 0xFFFF    # sjh: lws
+8361; 11931; 17065; 1371; 0xFFFF    # mjp: rqx zgj cat
+6238; 4818; 10022; 5611; 0xFFFF    # jfy: hdi ovm ihv
+12645; 9450; 0xFFFF    # ssj: nzm
+6863; 3643; 8436; 0xFFFF    # kdz: fkd mmm
+461; 10003; 0xFFFF    # art: out
+4360; 3643; 5255; 15574; 0xFFFF    # gls: fkd hud xba
+9870; 9278; 10988; 5834; 1543; 0xFFFF    # opq: nsw qgq iqk chj
+7173; 1549; 9310; 0xFFFF    # kpx: chp nuc
+14171; 5076; 4129; 0xFFFF    # uzb: hng gcv
+14346; 11949; 9234; 5729; 3999; 0xFFFF    # vfu: rrp nre imj fxv
+1672; 1506; 17423; 0xFFFF    # cmi: cfy zud
+15512; 8972; 4261; 6455; 0xFFFF    # wyq: nhc ghx joh
+1830; 10003; 0xFFFF    # csk: out
+14377; 2970; 8436; 15574; 0xFFFF    # vgz: ekg mmm xba
+15386; 8447; 0xFFFF    # wtu: mmx
+5216; 16625; 3321; 4715; 0xFFFF    # hsq: ypl ext gzj
+2970; 16258; 10071; 14486; 11865; 7313; 236; 12691; 7316; 17043; 17483; 10743; 0xFFFF    # ekg: ybi oxj vle roj kvh ajc sud kvk zfn zwl pxf
+3627; 13479; 17190; 5444; 14406; 0xFFFF    # fjn: tyl zle ibk vic
+7698; 10287; 13983; 1784; 0xFFFF    # lkc: pfr urv cqq
+3811; 11549; 14228; 0xFFFF    # fqp: rcf vbg
+1879; 11728; 0xFFFF    # cuh: rjc
+16955; 14171; 6089; 17302; 11239; 0xFFFF    # zcd: uzb jaf zpm qqh
+3787; 11542; 5541; 2934; 405; 0xFFFF    # fpr: rby ifd eiw app
+17423; 10704; 3524; 16090; 0xFFFF    # zud: pvs ffo xuw
+13633; 10003; 0xFFFF    # uej: out
+7263; 13269; 2934; 11542; 0xFFFF    # ktj: tqj eiw rby
+11896; 16888; 4994; 14224; 15386; 0xFFFF    # rpo: yzo hkc vbc wtu
+8023; 13479; 5077; 5444; 14406; 0xFFFF    # lwp: tyl hnh ibk vic
+3550; 10548; 6546; 0xFFFF    # fgo: pps jru
+4385; 11496; 1150; 11799; 0xFFFF    # gmr: rae bsg rlv
+17545; 10377; 11274; 0xFFFF    # zyv: pjd qrq
+3375; 10223; 0xFFFF    # ezv: pdf
+9291; 2217; 13769; 10022; 4818; 5611; 0xFFFF    # ntj: dhh ujp ovm hdi ihv
+11549; 15647; 8834; 0xFFFF    # rcf: xdv nbu
+6455; 16021; 211; 0xFFFF    # joh: xsf aid
+14425; 10003; 0xFFFF    # viv: out
+10377; 9870; 4003; 7074; 9045; 0xFFFF    # pjd: opq fxz kmc njx
+16978; 168; 12876; 0xFFFF    # zda: agm tbg
+17242; 6369; 14045; 0xFFFF    # zne: jkz uuf
+16424; 14346; 2475; 13211; 10563; 0xFFFF    # yhs: vfu drf tod pqh
+16049; 17091; 12301; 10422; 0xFFFF    # xth: zhj sfd pkw
+11260; 1452; 0xFFFF    # qrc: cdw
+14933; 17091; 0xFFFF    # wcj: zhj
+2429; 3550; 9207; 4134; 0xFFFF    # dpl: fgo nqd gda
+9755; 16608; 5827; 15848; 0xFFFF    # olf: you iqd xlo
+3697; 15313; 2173; 0xFFFF    # fmf: wqz dfp
+11589; 4638; 0xFFFF    # rdt: gwk
+10758; 9059; 0xFFFF    # pxu: nkl
+12893; 502; 2909; 906; 11575; 4560; 0xFFFF    # tbx: ati ehx biw rdf gtk
+0xFFFF
