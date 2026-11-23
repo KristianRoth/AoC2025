@@ -19,6 +19,7 @@ The CPU's board files for the Steam game Virtual Circuit Board (Update 1.0.1), a
 | `days/day7/cpu-32bit-autorun-aoc7p1.vcb` | The same for `days/day7/part1.vcbasm`; Persistent Memory `0x0100`–`0x0114`. |
 | `days/day7/cpu-32bit-autorun-aoc7p2.vcb` | The same for `days/day7/part2.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
 | `days/day8/cpu-32bit-autorun-aoc8p1.vcb` | The same for `days/day8/part1.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
+| `days/day8/cpu-32bit-autorun-aoc8p2.vcb` | The same for `days/day8/part2.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
 
 The boards differ only in those 24 latch pixels, in the assembly text they carry, and in the Persistent Memory range.
 
@@ -62,6 +63,8 @@ The rules the puzzles are solved under are in [`RULES.md`](RULES.md).
 | `days/day7/part2-example.vcbasm` | The same program with the puzzle's example as input (answer 40) |
 | `days/day8/part1.vcbasm` | Advent of Code day 8, part 1. The header says where the answer is left |
 | `days/day8/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 40) |
+| `days/day8/part2.vcbasm` | Advent of Code day 8, part 2. The header says where the answer is left |
+| `days/day8/part2-example.vcbasm` | The same program with the puzzle's example as input (answer 25272) |
 
 ## How a solution is written
 
@@ -110,6 +113,8 @@ Measured in the `vcb` engine on `cpu-32bit-autorun-aoc1p1.vcb`, to the Breakpoin
 | Day 7 part 2 | 305999729392659 | 250,336,656 | 0.9 s | 978,000 | 20,641 words |
 | Day 8 part 1, example | 40 | 114,226,256 | 0.6 s | 446,000 | 1,138 words |
 | Day 8 part 1 | 62186 | 22,469,978,064 | 97 s | 87,773,000 | 7,018 words |
+| Day 8 part 2, example | 25272 | 161,154,512 | 0.6 s | 630,000 | 1,310 words |
+| Day 8 part 2 | 8420405530 | 66,405,158,992 | 3.3 min | 259,395,000 | 7,190 words |
 
 "Instructions run" is the tick count divided by 256, the cost of most instructions:
 
@@ -178,7 +183,7 @@ Notes on the day 7 solutions:
 - **Part 2's time:** an empty cell costs about 19 instructions as in part 1; each of the 1,660 splitters that are reached costs about 290, for three additions of four words.
 - **Part 2's size:** about 460 words of code, variables and the powers of ten; the rest of the 20,641 words is the diagram.
 
-Notes on the day 8 solution:
+Notes on the day 8 solutions:
 
 - **Almost no distance is worked out.** 1,000 boxes make 499,500 pairs, and a distance needs three squares on a CPU without a multiply. The program takes a length T and drops a pair as soon as its boxes are T or more apart in X alone, then Y, then Z; only what is left gets its squared distance. If fewer than 1,000 pairs come out closer than T, T is doubled and the pairs are gone through again. For this input T goes 1024, 2048, 4096, 8192, and the last round leaves 1,085 pairs.
 - **Nothing is sorted.** The 1,000 closest of those 1,085 are found by building the 1,000th smallest squared distance bit by bit (30 counts over the list). The order of connecting does not change the circuits.
@@ -186,6 +191,9 @@ Notes on the day 8 solution:
 - **Where the time goes.** The four rounds over all pairs are nearly the whole run: a pair dropped on X costs about 40 instructions. The coordinates need 17 bits, so each is two words, and loading both words of one register needs the other register for the address; that is half of those 40.
 - **This is the longest run so far:** 22 thousand million ticks, about 75 minutes in the game at 5 million ticks a second.
 - **Size:** about 1,020 words of code, variables and tables; the rest of the 7,018 words is the boxes, six words each.
+- **Part 2 does not connect in order either.** The last connection has some length L: the pairs shorter than L do not make one circuit, the pairs up to L do. So the program collects pairs as in part 1, doubling T until connecting the whole list gives one circuit (T ends at 16384, with 7,752 pairs in the list), and then builds L's square bit by bit: 30 times it starts from single boxes, connects the pairs below a limit and looks whether 999 joins were made.
+- **Part 2's time:** five rounds over all pairs take about half of the run, the 30 trial connections of up to 7,752 pairs the other half. 66 thousand million ticks would be about 3.7 hours in the game at 5 million ticks a second.
+- **Part 2's size:** about 1,190 words of code, variables and tables.
 
 ## Instruction set
 
