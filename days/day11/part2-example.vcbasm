@@ -1,0 +1,415 @@
+# Advent of Code 2025, day 11 part 2 (Reactor), with the puzzle's example as input (answer 2)
+#
+# THE PUZZLE
+# Each line of the input names a device and the devices its outputs lead to. Data flows only from a
+# device through its outputs. The answer is the number of different paths from the device "svr" to the
+# device "out" that pass through both "dac" and "fft", in any order.
+#
+# THE IDEA
+# As in part 1 the number of paths from a device to "out" is the sum of that number for its outputs.
+# Here every device gets four such numbers, for the paths from it to "out" that pass, from this device
+# on and counting the device itself,
+#     NONE: neither dac nor fft      DAC: dac but not fft      FFT: fft but not dac      BOTH: both
+# "out" has NONE = 1 and the others 0. A device's four numbers are the sums of its outputs' four
+# numbers, with one change when the device is dac or fft itself: every path from dac passes dac, so its
+# NONE paths are DAC paths and its FFT paths are BOTH paths; the same for fft the other way round.
+# The answer is BOTH of "svr". In the example: fff has NONE = 2; dac turns that into DAC = 2; ccc gets
+# NONE = 2 (by ddd) and DAC = 2 (by eee); fft turns that into FFT = 2 and BOTH = 2; svr gets BOTH = 2 from
+# aaa and nothing with fft from bbb: 2.
+# A name is one number, (first * 26 + second) * 26 + third with a = 0: "svr" is 12731, "out" 10003,
+# "dac" 2030, "fft" 3529. A table with one word for each of the 17,576 possible names says where the
+# device's record is.
+#
+# THE WHOLE PROGRAM IN PSEUDO CODE
+#     for each line of the input: give the device a record; DEVICE[its name] = the record's address
+#     give "out" a record with NONE = 1, marked done
+#     REC = DEVICE["svr"]; COUNT
+#     TOTAL = BOTH of "svr"; write TOTAL as 15 decimal digits
+#     stop
+#
+#     COUNT:                                                # the record at REC gets its four numbers
+#         if REC is marked done: return
+#         for each output of the device:
+#             if there is a device of that name: keep REC and the place in the list; REC = its record; COUNT;
+#                 get them back; each of the four numbers of REC grows by the output's
+#         if the device is dac: DAC = DAC + NONE; NONE = 0; BOTH = BOTH + FFT; FFT = 0
+#         if the device is fft: FFT = FFT + NONE; NONE = 0; BOTH = BOTH + DAC; DAC = 0
+#         mark REC done
+#
+# COUNT calls itself. What it must keep goes on the CPU's stack with psh and comes back with pop.
+#
+# NUMBERS OF FOUR WORDS
+# The numbers of paths are far larger than a register holds. Each is four 16-bit words, lowest first,
+# added word by word: two words are added in a 32-bit register, the lower half of the sum is the
+# result's word and the upper half the carry into the next word.
+#
+# THE RESULT, when the CPU stops on the Breakpoint at END
+#   0x0100-0x0103  TOTAL as four 16-bit words, lowest first
+#   0x0110-0x011E  TOTAL as 15 decimal digits, one per word, most significant first
+#
+# THE INPUT (rule 1 of RULES.md), at 0x2000, the same words as in part 1
+# Line after line: the device's name as a number, the names of its outputs, then 0xFFFF. After the
+# last line comes one more 0xFFFF.
+# Built-in limits: names of three small letters; at most 1,130 devices; the input ends before 0x3000;
+# no path comes back to a device it has left (the puzzle's "data cannot flow backwards"); every number
+# of paths below 2^64, and the answer below 10^15.
+#
+# THE IDIOMS (v is a variable's address, below 0x1000)
+#     getA v / getB v          A or B = the word at v, upper half 0
+#     putA v                   the word at v = A   (this uses up B)
+#     getAat p / putAat p      the same for the word the pointer p points at
+#     getAoff p k              A = the word at the address (p + k); p is a variable holding an address
+#     copy v w                 w = v
+#     keepcarry v              v = the upper half of A: the carry of the sum just made
+#     if_eq L / if_neq L       compares A with B as they are now
+# What each instruction does exactly is in findings/cpu-instructions.md.
+#
+# MEMORY MAP
+#   0x0100-0x014F  variables            0x2000-  the input (13 lines end at 0x202A)
+#   0x1000-        the program          0x3000-  the records, 18 words each: the address of the device's
+#   0x1800-        the subroutines               outputs, 1 when done, then NONE, DAC, FFT, BOTH (four words each)
+#   0x1E00-        POWERS: 10^14 down to 1, four words each, then 0
+#   0x8000-0xC4A7  DEVICE: for each possible name, the address of the device's record, or 0
+#   0xE000-        the CPU's stack
+#   0xFF00         where the CPU starts
+
+# ---- The CPU's instructions as symbols (day 1's table without its _32 names, which the CPU ignores) ----
+symbol nop 0b0000_0000_0000_0000            # the word 0: stops the CPU (the same word as non)
+symbol ld  0b0010_0000_0000_0000            # load a register from memory (used through the load macro)
+symbol lia 0b0011_0000_0000_0000            # lia n: A = n (0 to 4095), upper half 0
+symbol lib 0b0100_0000_0000_0000            # lib n: B = n (0 to 4095), upper half 0
+symbol sto 0b0101_0000_0000_0000            # store a register to memory (used through the store macro)
+
+macro  load  { ld  | a? | (b? >> 6) }       # load X Y: X = the word at the address in Y
+macro  store { sto | a? | (b? >> 6) }       # store X Y: the word at the address in Y = X
+
+symbol sum    0b0110_0100_0000_0000         # A = A + B (32 bits), sets zero, carry, nega
+symbol sub    0b0110_0010_0000_0000         # A = A - B (32 bits), sets zero, carry, nega
+symbol shf    0b0110_0001_0000_0000         # shf | k: A = A shifted left by k (0 to 15)
+symbol and    0b0110_0000_1000_0000         # A = A and B
+symbol or     0b0110_0000_0100_0000         # A = A or B
+symbol xor    0b0110_0000_0010_0000         # A = A xor B
+symbol neg    0b0110_0000_0001_0000         # A = every bit of A flipped
+
+symbol psh 0b1010_0000_0000_0000            # psh X: push the 16 bits of X
+symbol pop 0b1011_0000_0000_0000            # pop X: pop 16 bits into X
+
+symbol jmp  0b1100_0000_0000_0000           # jmp; L: go to L.  jmp c; L: go to L when c holds
+symbol call 0b1110_0000_0000_0000           # call; L: run the subroutine at L
+symbol ret  0b1111_0000_0000_0000           # return from a subroutine
+
+# The registers, as load, store, psh and pop name them
+symbol rgAH 0b1000_0000_0000                # the upper 16 bits of A
+symbol rgA  0b0100_0000_0000                # the lower 16 bits of A
+symbol rgBH 0b0010_0000_0000                # the upper 16 bits of B
+symbol rgB  0b0001_0000_0000                # the lower 16 bits of B
+symbol rgSP 0b0000_1000_0000                # the program counter (leave alone)
+symbol rgSB 0b0000_0100_0000                # the stack pointer (leave alone)
+symbol non  0                               # stops the CPU (Breakpoint): the end of the program
+
+# The conditions of jmp
+symbol zero  0b1000_0000_0000               # the last sum or sub gave 0
+symbol carry 0b0100_0000_0000               # the last sum carried, or the last sub did not borrow (A >= B)
+symbol nega  0b0010_0000_0000               # the last sub went below 0 (A < B)
+symbol eq    0b0001_0000_0000               # A == B right now
+symbol neq   0b0000_1000_0000               # A != B right now
+
+# ---- Macros for the common operations (explained in the README). A macro cannot use another macro, so
+#      load and store are spelled out here. v: a variable, p: a variable holding an address, L: a label ----
+macro getA     { lia a?; ld | rgA | (rgA >> 6) }                                              # A = v
+macro getB     { lib a?; ld | rgB | (rgB >> 6) }                                              # B = v
+macro putA     { lib a?; sto | rgA | (rgB >> 6) }                                             # v = A (uses B)
+macro getAat   { lia a?; ld | rgA | (rgA >> 6); ld | rgA | (rgA >> 6) }                       # A = the word p points at
+macro putAat   { lib a?; ld | rgB | (rgB >> 6); sto | rgA | (rgB >> 6) }                      # the word p points at = A (uses B)
+macro inc      { lia a?; ld | rgA | (rgA >> 6); lib 1; sum; lib a?; sto | rgA | (rgB >> 6) }  # v = v + 1 (uses A and B)
+macro goto     { jmp; a? }                                                                    # go to L
+macro if_eq    { jmp eq; a? }                                                                 # go to L when A == B
+macro do       { call; a? }                                                                   # call the subroutine L
+macro if_carry { jmp carry; a? }                                                              # go to L after a sub when A >= B
+macro getAoff  { lia a?; ld | rgA | (rgA >> 6); lib b?; sum; ld | rgA | (rgA >> 6) }                # A = the word at (p + k) (uses B)
+macro copy     { lia a?; ld | rgA | (rgA >> 6); lib b?; sto | rgA | (rgB >> 6) }                      # w = v (uses A and B)
+macro get32A   { lib | (a? + 1); ld | rgAH | (rgB >> 6); lib a?; ld | rgA | (rgB >> 6) }                  # A = the 32 bits at v, v + 1 (uses B)
+macro get32B   { lia | (a? + 1); ld | rgBH | (rgA >> 6); lia a?; ld | rgB | (rgA >> 6) }                  # B = the 32 bits at v, v + 1 (uses A)
+macro get32AB  { lib | (a? + 1); ld | rgAH | (rgB >> 6); lib a?; ld | rgA | (rgB >> 6); psh rgAH; psh rgA; lia | (b? + 1); ld | rgBH | (rgA >> 6); lia b?; ld | rgB | (rgA >> 6); pop rgA; pop rgAH }
+# get32AB v w: A = the 32 bits at v, B = the 32 bits at w
+macro put32A   { lib a?; sto | rgA | (rgB >> 6); lib | (a? + 1); sto | rgAH | (rgB >> 6) }                # the 32 bits at v, v + 1 = A (uses B)
+
+macro keepcarry { psh rgAH; pop rgB; lia a?; sto | rgB | (rgA >> 6) }                                 # v = the upper half of A (uses A and B)
+macro if_neq   { jmp neq; a? }                                                                # go to L when A != B
+
+
+# ---- Variables (all below 0x1000, so lia/lib can address them) ----
+# The result, four words: the number of paths
+pointer TOTAL0 0x0100 0
+pointer TOTAL1 0x0101 0
+pointer TOTAL2 0x0102 0
+pointer TOTAL3 0x0103 0
+# IN: the address of the next word of the input. NEXT_REC: the next free record
+pointer IN 0x0120 0x2000
+pointer NEXT_REC 0x0121 0x3000
+# REC: the record COUNT works on. LP: the place in its list of outputs. CHILD: the record of an output
+pointer REC 0x0122 0
+pointer LP 0x0123 0
+pointer CHILD 0x0124 0
+# PA, PB: the words ADD4 is adding. ADD: the word from PB. ADR: an address worked out for a store
+pointer PA 0x0125 0
+pointer PB 0x0126 0
+pointer ADD 0x0127 0
+pointer ADR 0x0128 0
+# FROM, TO: the two numbers of MOVE4, as places in the record (2 NONE, 6 DAC, 10 FFT, 14 BOTH). NAME: the name of the device
+pointer FROM 0x0129 0
+pointer TO 0x012A 0
+pointer NAME 0x012B 0
+# The carry from one word of an addition into the next
+pointer CARRY 0x012C 0
+# SUBTRACT works out DIFF = X - Y, and CARRY = 1 when X >= Y (for the decimal digits)
+pointer X0 0x012D 0
+pointer X1 0x012E 0
+pointer X2 0x012F 0
+pointer X3 0x0130 0
+pointer Y0 0x0131 0
+pointer Y1 0x0132 0
+pointer Y2 0x0133 0
+pointer Y3 0x0134 0
+pointer DIFF0 0x0135 0
+pointer DIFF1 0x0136 0
+pointer DIFF2 0x0137 0
+pointer DIFF3 0x0138 0
+# For the decimal digits: how often the current power of ten fitted
+pointer DIGIT_VALUE 0x0139 0
+# Pointers: DIGIT the next digit to write, POW the next power of ten
+pointer DIGIT 0x013A 0x0110
+pointer POW 0x013B 0x1E00
+# Constants that do not fit an instruction's place for a number. SVR, OUT, DAC and FFT are those names as numbers
+pointer DEVICE 0x013C 0x8000
+pointer SVR 0x013D 12731
+pointer OUT 0x013E 10003
+pointer DAC 0x013F 2030
+pointer FFT 0x0140 3529
+pointer END_MARK 0x0141 0xFFFF
+pointer ALL_ONES 0x0142 0xFFFF
+
+# ---- The CPU starts at 0xFF00 ----
+origin 0xFF00
+goto MAIN
+
+origin 0x1000
+@ MAIN
+# ==== a record for every device ====
+#     while memory[IN] != 0xFFFF:                           # IN starts at the first line
+#         DEVICE[memory[IN]] = NEXT_REC
+#         IN = IN + 1; memory[NEXT_REC] = IN                # the record's first word: where the outputs are listed
+#         NEXT_REC = NEXT_REC + 18
+#         while memory[IN] != 0xFFFF: IN = IN + 1           # step over the outputs
+#         IN = IN + 1
+@ LINE
+	getAat IN; getB END_MARK                                     # A = the name of the device, B = 0xFFFF
+	if_eq LINES_DONE                                             # the end of the input
+	getB DEVICE; sum                                             # A = the address of DEVICE[the name]
+	getB NEXT_REC; store rgB rgA                                 # DEVICE[the name] = NEXT_REC
+	inc IN                                                       # IN = IN + 1
+	putAat NEXT_REC                                              # memory[NEXT_REC] = IN (A still holds IN)
+	getA NEXT_REC; lib 18; sum; putA NEXT_REC                    # NEXT_REC = NEXT_REC + 18
+@ LINE_OUTPUT
+	getAat IN; getB END_MARK                                     # A = memory[IN], B = 0xFFFF
+	if_eq LINE_END
+	inc IN                                                       # IN = IN + 1
+	goto LINE_OUTPUT
+@ LINE_END
+	inc IN                                                       # IN = IN + 1: past the 0xFFFF
+	goto LINE
+
+# ==== "out" has one path, which passes neither dac nor fft; then count from "svr" ====
+#     DEVICE[OUT] = NEXT_REC; memory[NEXT_REC + 1] = 1; memory[NEXT_REC + 2] = 1
+#     REC = DEVICE[SVR]; COUNT
+#     TOTAL = BOTH of REC
+@ LINES_DONE
+	getA OUT; getB DEVICE; sum                                   # A = the address of DEVICE["out"]
+	getB NEXT_REC; store rgB rgA                                 # DEVICE["out"] = NEXT_REC
+	getA NEXT_REC; lib 1; sum; lib 1; store rgB rgA              # the record is done
+	getA NEXT_REC; lib 2; sum; lib 1; store rgB rgA              # its NONE = 1 (the lowest word; all else is 0)
+	getA SVR; getB DEVICE; sum; load rgA rgA; putA REC           # REC = DEVICE["svr"]
+	do COUNT                                                     # the four numbers of "svr"
+	getAoff REC 14; putA TOTAL0                                  # TOTAL = BOTH of REC; word 0 (the lowest)
+	getAoff REC 15; putA TOTAL1                                  # word 1
+	getAoff REC 16; putA TOTAL2                                  # word 2
+	getAoff REC 17; putA TOTAL3                                  # word 3 (the top)
+
+# ==== write TOTAL as 15 decimal digits ====
+# A digit is how often a power of ten fits into what is left. Without division that is counting.
+# X is what is left of the total, Y the power of ten:
+#     X = TOTAL
+#     for Y in 10^14, 10^13, ..., 10, 1:                # the table ends at a number whose lowest word is 0
+#         DIGIT_VALUE = 0
+#         loop:
+#             SUBTRACT                                  # DIFF = X - Y, CARRY = 1 when X >= Y
+#             if CARRY == 0: break
+#             X = DIFF; DIGIT_VALUE = DIGIT_VALUE + 1
+#         memory[DIGIT] = DIGIT_VALUE; DIGIT = DIGIT + 1
+# (The lowest word of a power of ten up to 10^15 is never 0, so a 0 there can end the table.)
+@ WRITE_TOTAL
+	copy TOTAL0 X0                                               # X = TOTAL; word 0 (the lowest)
+	copy TOTAL1 X1                                               # word 1
+	copy TOTAL2 X2                                               # word 2
+	copy TOTAL3 X3                                               # word 3 (the top)
+@ NEXT_POWER
+	getAat POW                                                   # A = the lowest word of the next power of ten
+	lib 0                                                        # B = 0
+	if_eq END                                                    # a lowest word of 0 ends the table
+	putA Y0                                                      # Y = the power of ten; word 0 (the lowest)
+	getAoff POW 1; putA Y1                                       # word 1
+	getAoff POW 2; putA Y2                                       # word 2
+	getAoff POW 3; putA Y3                                       # word 3 (the top)
+	getA POW; lib 4; sum; putA POW                               # POW = POW + 4
+	lia 0; putA DIGIT_VALUE                                      # DIGIT_VALUE = 0
+@ FITS_AGAIN
+	do SUBTRACT                                                  # DIFF = X - Y, CARRY = 1 when X >= Y
+	getA CARRY; lib 0                                            # A = CARRY, B = 0
+	if_eq WRITE_DIGIT                                            # X < Y: the power does not fit again
+	copy DIFF0 X0                                                # X = DIFF; word 0 (the lowest)
+	copy DIFF1 X1                                                # word 1
+	copy DIFF2 X2                                                # word 2
+	copy DIFF3 X3                                                # word 3 (the top)
+	inc DIGIT_VALUE                                              # DIGIT_VALUE = DIGIT_VALUE + 1
+	goto FITS_AGAIN
+@ WRITE_DIGIT
+	getA DIGIT_VALUE; putAat DIGIT                               # memory[DIGIT] = DIGIT_VALUE
+	inc DIGIT                                                    # DIGIT = DIGIT + 1
+	goto NEXT_POWER
+
+# The word 0 stops the CPU on its Breakpoint.
+@ END
+	non
+
+# ---- Subroutines ----
+origin 0x1800
+# COUNT: the record at REC gets its four numbers. REC is left as it was.
+#     if memory[REC + 1] == 1: return                       # done before
+#     for LP = memory[REC]; memory[LP] != 0xFFFF; LP = LP + 1:
+#         CHILD = DEVICE[memory[LP]]
+#         if CHILD != 0:                                    # 0: no device of that name, so no path
+#             push REC, LP; REC = CHILD; COUNT; CHILD = REC; pop LP, REC
+#             PA = REC + 2; PB = CHILD + 2; ADD4 four times # NONE, DAC, FFT, BOTH of REC grow by CHILD's
+#     NAME = memory[memory[REC] - 1]                        # the word before the list of outputs
+#     if NAME == DAC: MOVE4 NONE to DAC; MOVE4 FFT to BOTH
+#     if NAME == FFT: MOVE4 NONE to FFT; MOVE4 DAC to BOTH
+#     memory[REC + 1] = 1
+@ COUNT
+	getAoff REC 1; lib 1                                         # A = the mark of the record, B = 1
+	if_eq COUNT_RETURN                                           # done before
+	getAat REC; putA LP                                          # LP = where the outputs are listed
+@ COUNT_OUTPUT
+	getAat LP; getB END_MARK                                     # A = the name of the output, B = 0xFFFF
+	if_eq COUNT_SUMMED                                           # the end of the outputs
+	getB DEVICE; sum; load rgA rgA; putA CHILD                   # CHILD = DEVICE[the name]
+	lib 0                                                        # B = 0
+	if_eq COUNT_NEXT                                             # no device of that name
+	getA REC; psh rgA; getA LP; psh rgA                          # REC and LP go on the stack
+	copy CHILD REC                                               # REC = CHILD
+	do COUNT                                                     # the four numbers of the output
+	copy REC CHILD                                               # CHILD = the output's record again
+	pop rgA; putA LP; pop rgA; putA REC                          # LP and REC come back
+	getA REC; lib 2; sum; putA PA                                # PA = the address of NONE of REC
+	getA CHILD; lib 2; sum; putA PB                              # PB = the address of NONE of CHILD
+	do ADD4                                                      # NONE of REC = NONE of REC + NONE of CHILD
+	do ADD4                                                      # the same for DAC: PA and PB have moved on
+	do ADD4                                                      # for FFT
+	do ADD4                                                      # for BOTH
+@ COUNT_NEXT
+	inc LP                                                       # LP = LP + 1
+	goto COUNT_OUTPUT
+@ COUNT_SUMMED
+	getAat REC; lib 1; sub; load rgA rgA; putA NAME              # NAME = the word before the list of outputs
+	getB DAC                                                     # B = the name "dac" (A still holds NAME)
+	if_neq COUNT_NOT_DAC
+	lia 2; putA FROM; lia 6; putA TO                             # this is dac: its NONE paths are DAC paths
+	do MOVE4
+	lia 10; putA FROM; lia 14; putA TO                           # and its FFT paths are BOTH paths
+	do MOVE4
+@ COUNT_NOT_DAC
+	getA NAME; getB FFT                                          # A = NAME, B = the name "fft"
+	if_neq COUNT_DONE
+	lia 2; putA FROM; lia 10; putA TO                            # this is fft: its NONE paths are FFT paths
+	do MOVE4
+	lia 6; putA FROM; lia 14; putA TO                            # and its DAC paths are BOTH paths
+	do MOVE4
+@ COUNT_DONE
+	getA REC; lib 1; sum; lib 1; store rgB rgA                   # the record is done
+@ COUNT_RETURN
+	ret
+
+# ADD4: the number of four words at PA grows by the one at PB. PA and PB end four words on.
+@ ADD4
+	lia 0; putA CARRY                                            # CARRY = 0
+	getAat PB; putA ADD; getAat PA; getB ADD; sum; getB CARRY; sum; putAat PA; keepcarry CARRY; inc PA; inc PB # word 0: memory[PA] = memory[PA] + memory[PB] + carry; PA, PB = the next words
+	getAat PB; putA ADD; getAat PA; getB ADD; sum; getB CARRY; sum; putAat PA; keepcarry CARRY; inc PA; inc PB # word 1
+	getAat PB; putA ADD; getAat PA; getB ADD; sum; getB CARRY; sum; putAat PA; keepcarry CARRY; inc PA; inc PB # word 2
+	getAat PB; putA ADD; getAat PA; getB ADD; sum; getB CARRY; sum; putAat PA; inc PA; inc PB # word 3 (the top)
+	ret
+
+# MOVE4: in the record at REC, the number at place TO grows by the number at place FROM, which becomes 0.
+#     PA = REC + TO; PB = REC + FROM; ADD4
+#     the four words from REC + FROM on = 0
+@ MOVE4
+	getA REC; getB TO; sum; putA PA                              # PA = REC + TO
+	getA REC; getB FROM; sum; putA PB                            # PB = REC + FROM
+	do ADD4                                                      # the number at TO grows by the one at FROM
+	getA REC; getB FROM; sum; putA PB                            # PB = REC + FROM again
+	lia 0; putAat PB; inc PB                                     # word 0 = 0
+	lia 0; putAat PB; inc PB                                     # word 1
+	lia 0; putAat PB; inc PB                                     # word 2
+	lia 0; putAat PB                                             # word 3
+	ret
+
+# SUBTRACT: DIFF = X - Y, and CARRY = 1 when X >= Y (0 when X < Y; DIFF is then of no use).
+# Done as X + (Y with every bit flipped) + 1, word by word from the lowest:
+#     CARRY = 1                                         # the "+ 1"
+#     for k in 0, 1, 2, 3:
+#         A = (0xFFFF - Yk) + Xk + CARRY                # at most 0x1FFFF
+#         DIFFk = the lower half of A; CARRY = the upper half of A
+# X and Y are left as they were.
+@ SUBTRACT
+	lia 1; putA CARRY                                            # CARRY = 1
+	getA ALL_ONES; getB Y0; sub; getB X0; sum; getB CARRY; sum; putA DIFF0; keepcarry CARRY # word 0: DIFF0 = (0xFFFF - Y0) + X0 + carry
+	getA ALL_ONES; getB Y1; sub; getB X1; sum; getB CARRY; sum; putA DIFF1; keepcarry CARRY # word 1
+	getA ALL_ONES; getB Y2; sub; getB X2; sum; getB CARRY; sum; putA DIFF2; keepcarry CARRY # word 2
+	getA ALL_ONES; getB Y3; sub; getB X3; sum; getB CARRY; sum; putA DIFF3; keepcarry CARRY # word 3: its carry is 1 when X >= Y
+	ret
+
+# ---- Powers of ten for the decimal digits: 10^14 down to 1, four words each, lowest first; then 0 ----
+origin 0x1E00
+0x4000; 0x107A; 0x5AF3; 0x0000    # 100000000000000
+0xA000; 0x4E72; 0x0918; 0x0000    # 10000000000000
+0x1000; 0xD4A5; 0x00E8; 0x0000    # 1000000000000
+0xE800; 0x4876; 0x0017; 0x0000    # 100000000000
+0xE400; 0x540B; 0x0002; 0x0000    # 10000000000
+0xCA00; 0x3B9A; 0x0000; 0x0000    # 1000000000
+0xE100; 0x05F5; 0x0000; 0x0000    # 100000000
+0x9680; 0x0098; 0x0000; 0x0000    # 10000000
+0x4240; 0x000F; 0x0000; 0x0000    # 1000000
+0x86A0; 0x0001; 0x0000; 0x0000    # 100000
+0x2710; 0x0000; 0x0000; 0x0000    # 10000
+0x03E8; 0x0000; 0x0000; 0x0000    # 1000
+0x0064; 0x0000; 0x0000; 0x0000    # 100
+0x000A; 0x0000; 0x0000; 0x0000    # 10
+0x0001; 0x0000; 0x0000; 0x0000    # 1
+0
+
+
+
+# ---- The devices: 13 lines, then 0xFFFF ----
+origin 0x2000
+12731; 0; 703; 0xFFFF    # svr: aaa bbb
+0; 3529; 0xFFFF    # aaa: fft
+3529; 1406; 0xFFFF    # fft: ccc
+703; 13362; 0xFFFF    # bbb: tty
+13362; 1406; 0xFFFF    # tty: ccc
+1406; 2109; 2812; 0xFFFF    # ccc: ddd eee
+2109; 5253; 0xFFFF    # ddd: hub
+5253; 3515; 0xFFFF    # hub: fff
+2812; 2030; 0xFFFF    # eee: dac
+2030; 3515; 0xFFFF    # dac: fff
+3515; 4218; 4921; 0xFFFF    # fff: ggg hhh
+4218; 10003; 0xFFFF    # ggg: out
+4921; 10003; 0xFFFF    # hhh: out
+0xFFFF

@@ -12,7 +12,7 @@
 # In the example: ddd, eee, fff, ggg and iii have 1 each; bbb = ddd + eee = 2; ccc = ddd + eee + fff = 3;
 # you = bbb + ccc = 5.
 # A device name is three letters. In memory it is one number: a = 0, b = 1, ..., z = 25, and the name
-# is (first * 26 + second) * 26 + third, so "you" is 16608 and "out" is 9977. A table with one word
+# is (first * 26 + second) * 26 + third, so "you" is 16608 and "out" is 10003. A table with one word
 # for each of the 17,576 possible names says where the device's record is.
 #
 # THE WHOLE PROGRAM IN PSEUDO CODE
