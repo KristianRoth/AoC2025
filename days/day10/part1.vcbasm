@@ -1,0 +1,1031 @@
+# Advent of Code 2025, day 10 part 1 (Factory)
+#
+# THE PUZZLE
+# Each line of the input is a machine: a row of indicator lights with the pattern they must show, and a
+# number of buttons, each wired to some of the lights. All lights start off; pushing a button turns
+# each of its lights from off to on or from on to off. The answer is the fewest pushes that make every
+# machine show its pattern, added up over all machines. (The joltages at the end of a line are not used.)
+#
+# THE IDEA
+# The lights of a machine are the bits of one word: bit 0 is the first light. A button is the word with
+# the bits of its lights, and pushing it is "state xor button". The fewest pushes from "all off" to the
+# pattern is a shortest way through the states, found by going outwards from "all off" one push at a
+# time (a breadth-first search): first every state one push away, then every new state one push from
+# those, and so on, never visiting a state twice. The first time the pattern turns up, the number of
+# pushes is the fewest. For the example's first machine, [.##.] = 6:
+#     0 pushes: 0        1 push: 8, 10, 4, 12, 5, 3        2 pushes: 8 xor 10 = 2, ..., 5 xor 3 = 6: found
+# VISITED has one word per state. A state is visited when its word holds the machine's number, so the
+# table never has to be cleared between machines.
+#
+# THE WHOLE PROGRAM IN PSEUDO CODE
+#     TOTAL = 0; STAMP = 0
+#     for each machine:
+#         TARGET = the pattern as a word; the buttons as words (below)
+#         if TARGET == 0: continue
+#         STAMP = STAMP + 1; VISITED[0] = STAMP
+#         the queue = [state 0 with 0 pushes]
+#         for S, with its pushes, taken from the front of the queue:
+#             for each button B:
+#                 T = S xor B
+#                 if T == TARGET: TOTAL = TOTAL + (the pushes of S) + 1; go to the next machine
+#                 if VISITED[T] != STAMP: VISITED[T] = STAMP; put T with (the pushes of S) + 1 at the end of the queue
+#     write TOTAL as five decimal digits
+#     stop
+#
+# THE RESULT, when the CPU stops on the Breakpoint at END
+#   0x0100         the total as one 16-bit word
+#   0x0110-0x0114  the total as five decimal digits, one per word, most significant first
+#
+# THE INPUT (rule 1 of RULES.md), at 0x2000
+# Machine after machine, as in the puzzle's text:
+#     one word per light: 0 for off (.), 1 for on (#); then 0xFFFF
+#     for each button: the numbers of its lights, then 0xFFFE; after the last button 0xFFFF
+#     the joltages, one word each; then 0xFFFF
+# After the last machine comes one more 0xFFFF.
+# Built-in limits: at most 12 lights and 256 buttons a machine; a button names a light once; every
+# machine can be made to show its pattern; the total stays below 65,536.
+#
+# ONE WORD IS ENOUGH
+# Every value here fits in 16 bits, so each variable is one memory word. The idioms used everywhere
+# (v is a variable's address, below 0x1000):
+#     getA v                   A = the word at v   (lia v; load rgA rgA: lia puts the address in A, load replaces it)
+#     getB v                   B = the word at v
+#     putA v                   the word at v = A   (this uses up B)
+#     getAat p / putAat p      the same for the word the pointer p points at
+#     copy v w                 w = v
+#     if_eq L                  compares A with B as they are now
+#     sub; if_carry L          after A - B: taken when A >= B
+# What each instruction does exactly is in findings/cpu-instructions.md.
+#
+# MEMORY MAP
+#   0x0100-0x013F  variables            0x1E00-  POWERS: 10000, 1000, 100, 10, 1, 0
+#   0x0200-0x02FF  the buttons of the machine at hand, one word each
+#   0x1000-        the program          0x1E10-  BITS: 1, 2, 4, ..., 32768: the word for light 0, 1, 2, ...
+#   0x2000-        the input (178 machines end at 0x4503)
+#   0x8000-0x8FFF  VISITED: one word per state      0x9000-0x9FFF  the queue: the states
+#   0xA000-0xAFFF  the pushes of the states in the queue (the word 0x1000 after the state's)
+#   0xFF00         where the CPU starts
+
+# ---- The CPU's instructions as symbols (day 1's table without its _32 names, which the CPU ignores) ----
+symbol nop 0b0000_0000_0000_0000            # the word 0: stops the CPU (the same word as non)
+symbol ld  0b0010_0000_0000_0000            # load a register from memory (used through the load macro)
+symbol lia 0b0011_0000_0000_0000            # lia n: A = n (0 to 4095), upper half 0
+symbol lib 0b0100_0000_0000_0000            # lib n: B = n (0 to 4095), upper half 0
+symbol sto 0b0101_0000_0000_0000            # store a register to memory (used through the store macro)
+
+macro  load  { ld  | a? | (b? >> 6) }       # load X Y: X = the word at the address in Y
+macro  store { sto | a? | (b? >> 6) }       # store X Y: the word at the address in Y = X
+
+symbol sum    0b0110_0100_0000_0000         # A = A + B (32 bits), sets zero, carry, nega
+symbol sub    0b0110_0010_0000_0000         # A = A - B (32 bits), sets zero, carry, nega
+symbol shf    0b0110_0001_0000_0000         # shf | k: A = A shifted left by k (0 to 15)
+symbol and    0b0110_0000_1000_0000         # A = A and B
+symbol or     0b0110_0000_0100_0000         # A = A or B
+symbol xor    0b0110_0000_0010_0000         # A = A xor B
+symbol neg    0b0110_0000_0001_0000         # A = every bit of A flipped
+
+symbol psh 0b1010_0000_0000_0000            # psh X: push the 16 bits of X
+symbol pop 0b1011_0000_0000_0000            # pop X: pop 16 bits into X
+
+symbol jmp  0b1100_0000_0000_0000           # jmp; L: go to L.  jmp c; L: go to L when c holds
+symbol call 0b1110_0000_0000_0000           # call; L: run the subroutine at L
+symbol ret  0b1111_0000_0000_0000           # return from a subroutine
+
+# The registers, as load, store, psh and pop name them
+symbol rgAH 0b1000_0000_0000                # the upper 16 bits of A
+symbol rgA  0b0100_0000_0000                # the lower 16 bits of A
+symbol rgBH 0b0010_0000_0000                # the upper 16 bits of B
+symbol rgB  0b0001_0000_0000                # the lower 16 bits of B
+symbol rgSP 0b0000_1000_0000                # the program counter (leave alone)
+symbol rgSB 0b0000_0100_0000                # the stack pointer (leave alone)
+symbol non  0                               # stops the CPU (Breakpoint): the end of the program
+
+# The conditions of jmp
+symbol zero  0b1000_0000_0000               # the last sum or sub gave 0
+symbol carry 0b0100_0000_0000               # the last sum carried, or the last sub did not borrow (A >= B)
+symbol nega  0b0010_0000_0000               # the last sub went below 0 (A < B)
+symbol eq    0b0001_0000_0000               # A == B right now
+symbol neq   0b0000_1000_0000               # A != B right now
+
+# ---- Macros for the common operations (explained in the README). A macro cannot use another macro, so
+#      load and store are spelled out here. v: a variable, p: a variable holding an address, L: a label ----
+macro getA     { lia a?; ld | rgA | (rgA >> 6) }                                              # A = v
+macro getB     { lib a?; ld | rgB | (rgB >> 6) }                                              # B = v
+macro putA     { lib a?; sto | rgA | (rgB >> 6) }                                             # v = A (uses B)
+macro getAat   { lia a?; ld | rgA | (rgA >> 6); ld | rgA | (rgA >> 6) }                       # A = the word p points at
+macro putAat   { lib a?; ld | rgB | (rgB >> 6); sto | rgA | (rgB >> 6) }                      # the word p points at = A (uses B)
+macro inc      { lia a?; ld | rgA | (rgA >> 6); lib 1; sum; lib a?; sto | rgA | (rgB >> 6) }  # v = v + 1 (uses A and B)
+macro goto     { jmp; a? }                                                                    # go to L
+macro if_eq    { jmp eq; a? }                                                                 # go to L when A == B
+macro do       { call; a? }                                                                   # call the subroutine L
+macro if_carry { jmp carry; a? }                                                              # go to L after a sub when A >= B
+macro copy     { lia a?; ld | rgA | (rgA >> 6); lib b?; sto | rgA | (rgB >> 6) }                      # w = v (uses A and B)
+
+# ---- Variables (all below 0x1000, so lia/lib can address them) ----
+# The result
+pointer TOTAL 0x0100 0
+# IN: the address of the next word of the input
+pointer IN 0x0120 0x2000
+# TARGET: the pattern of the machine as a word. BIT: the word for the light being read. MASK: a button being put together
+pointer TARGET 0x0121 0
+pointer BIT 0x0122 0
+pointer MASK 0x0123 0
+# BEND: the address after the machine's last button. BP: the button being tried
+pointer BEND 0x0124 0
+pointer BP 0x0125 0
+# STAMP: the number of the machine. QH, QT: the front of the queue and its end
+pointer STAMP 0x0126 0
+pointer QH 0x0127 0
+pointer QT 0x0128 0
+# S: the state taken from the queue. PUSHES: its pushes + 1. T: S after one more push. ADR: an address worked out
+pointer S 0x0129 0
+pointer PUSHES 0x012A 0
+pointer T 0x012B 0
+pointer ADR 0x012C 0
+# For the decimal digits: what is left of the total, the current power of ten, how often it fitted
+pointer REST 0x012D 0
+pointer POWER 0x012E 0
+pointer DIGIT_VALUE 0x012F 0
+# Pointers: DIGIT the next digit to write, POW the next power of ten
+pointer DIGIT 0x0130 0x0110
+pointer POW 0x0131 0x1E00
+# Constants that do not fit an instruction's place for a number
+pointer BUTTONS 0x0132 0x0200
+pointer BITS 0x0133 0x1E10
+pointer VISITED 0x0134 0x8000
+pointer QUEUE 0x0135 0x9000
+pointer TO_PUSHES 0x0136 0x1000
+pointer END_MARK 0x0137 0xFFFF
+pointer BUTTON_MARK 0x0138 0xFFFE
+
+# ---- The CPU starts at 0xFF00 ----
+origin 0xFF00
+goto MAIN
+
+origin 0x1000
+@ MAIN
+# ==== read a machine: its pattern ====
+#     if memory[IN] == 0xFFFF: goto ALL_DONE                # no machine is left
+#     TARGET = 0; BIT = 1
+#     while memory[IN] != 0xFFFF:
+#         if memory[IN] == 1: TARGET = TARGET + BIT
+#         BIT = BIT * 2; IN = IN + 1
+#     IN = IN + 1
+@ NEXT_MACHINE
+	getAat IN; getB END_MARK                                     # A = memory[IN], B = 0xFFFF
+	if_eq ALL_DONE                                               # the end of the input
+	lia 0; putA TARGET                                           # TARGET = 0
+	lia 1; putA BIT                                              # BIT = 1
+@ LIGHT
+	getAat IN; getB END_MARK                                     # A = memory[IN], B = 0xFFFF
+	if_eq LIGHTS_DONE                                            # the end of the lights
+	lib 0                                                        # B = 0
+	if_eq LIGHT_OFF                                              # this light is to be off
+	getA TARGET; getB BIT; sum; putA TARGET                      # TARGET = TARGET + BIT
+@ LIGHT_OFF
+	getA BIT; shf | 1; putA BIT                                  # BIT = BIT * 2
+	inc IN                                                       # IN = IN + 1
+	goto LIGHT
+@ LIGHTS_DONE
+	inc IN                                                       # IN = IN + 1: past the 0xFFFF
+	copy BUTTONS BEND                                            # BEND = BUTTONS: no button yet
+
+# ==== its buttons ====
+#     while memory[IN] != 0xFFFF:
+#         MASK = 0
+#         while memory[IN] != 0xFFFE: MASK = MASK + BITS[memory[IN]]; IN = IN + 1
+#         memory[BEND] = MASK; BEND = BEND + 1; IN = IN + 1
+#     IN = IN + 1
+@ BUTTON
+	getAat IN; getB END_MARK                                     # A = memory[IN], B = 0xFFFF
+	if_eq BUTTONS_DONE                                           # the end of the buttons
+	lia 0; putA MASK                                             # MASK = 0
+@ BUTTON_LIGHT
+	getAat IN; getB BUTTON_MARK                                  # A = memory[IN], B = 0xFFFE
+	if_eq BUTTON_END                                             # the end of this button
+	getB BITS; sum; load rgA rgA                                 # A = BITS[the number of the light]
+	getB MASK; sum; putA MASK                                    # MASK = MASK + that
+	inc IN                                                       # IN = IN + 1
+	goto BUTTON_LIGHT
+@ BUTTON_END
+	getA MASK; putAat BEND                                       # memory[BEND] = MASK
+	inc BEND                                                     # BEND = BEND + 1
+	inc IN                                                       # IN = IN + 1: past the 0xFFFE
+	goto BUTTON
+@ BUTTONS_DONE
+	inc IN                                                       # IN = IN + 1: past the 0xFFFF
+
+# ==== step over its joltages ====
+#     while memory[IN] != 0xFFFF: IN = IN + 1
+#     IN = IN + 1
+@ JOLTAGE
+	getAat IN; getB END_MARK                                     # A = memory[IN], B = 0xFFFF
+	if_eq JOLTAGES_DONE
+	inc IN                                                       # IN = IN + 1
+	goto JOLTAGE
+@ JOLTAGES_DONE
+	inc IN                                                       # IN = IN + 1: past the 0xFFFF
+
+# ==== the fewest pushes ====
+#     if TARGET == 0: goto NEXT_MACHINE
+#     STAMP = STAMP + 1; VISITED[0] = STAMP
+#     memory[QUEUE] = 0; its pushes = 0; QH = QUEUE; QT = QUEUE + 1
+#     loop:
+#         S = memory[QH]; PUSHES = (the pushes of S) + 1; QH = QH + 1
+#         for BP = BUTTONS; BP != BEND; BP = BP + 1:
+#             T = S xor memory[BP]
+#             if T == TARGET: TOTAL = TOTAL + PUSHES; goto NEXT_MACHINE
+#             if VISITED[T] != STAMP:
+#                 VISITED[T] = STAMP; memory[QT] = T; the pushes of T = PUSHES; QT = QT + 1
+	getA TARGET; lib 0                                           # A = TARGET, B = 0
+	if_eq NEXT_MACHINE                                           # all lights off: nothing to push
+	inc STAMP                                                    # STAMP = STAMP + 1
+	putAat VISITED                                               # VISITED[0] = STAMP (A still holds STAMP)
+	lia 0; putAat QUEUE                                          # the first state in the queue = 0
+	getA QUEUE; getB TO_PUSHES; sum; lib 0; store rgB rgA        # its pushes = 0
+	copy QUEUE QH                                                # QH = QUEUE
+	lib 1; sum; putA QT                                          # QT = QUEUE + 1 (A still holds QUEUE)
+@ NEXT_STATE
+	getA QH; getB QT                                             # A = QH, B = QT
+	if_eq NEXT_MACHINE                                           # the queue is empty: the pattern cannot be made (not in the puzzle)
+	getAat QH; putA S                                            # S = memory[QH]
+	getA QH; getB TO_PUSHES; sum; load rgA rgA                   # A = the pushes of S
+	lib 1; sum; putA PUSHES                                      # PUSHES = that + 1
+	inc QH                                                       # QH = QH + 1
+	copy BUTTONS BP                                              # BP = the first button
+@ NEXT_BUTTON
+	getA BP; getB BEND                                           # A = BP, B = BEND
+	if_eq NEXT_STATE                                             # every button has been tried on S
+	getAat BP; getB S; xor; putA T                               # T = S xor the button
+	getB TARGET                                                  # B = TARGET (A still holds T)
+	if_eq FOUND                                                  # the pattern
+	inc BP                                                       # BP = BP + 1
+	getA T; getB VISITED; sum; putA ADR                          # ADR = the address of VISITED[T]
+	load rgA rgA; getB STAMP                                     # A = VISITED[T], B = STAMP
+	if_eq NEXT_BUTTON                                            # T was reached before, with no more pushes
+	getA STAMP; putAat ADR                                       # VISITED[T] = STAMP
+	getA T; putAat QT                                            # memory[QT] = T
+	getA QT; getB TO_PUSHES; sum                                 # A = the address of its pushes
+	getB PUSHES; store rgB rgA                                   # the pushes of T = PUSHES
+	inc QT                                                       # QT = QT + 1
+	goto NEXT_BUTTON
+@ FOUND
+	getA TOTAL; getB PUSHES; sum; putA TOTAL                     # TOTAL = TOTAL + PUSHES
+	goto NEXT_MACHINE
+
+# ==== write TOTAL as five decimal digits ====
+# A digit is how often a power of ten fits into what is left. Without division that is counting:
+#     REST = TOTAL
+#     for POWER in 10000, 1000, 100, 10, 1:
+#         DIGIT_VALUE = 0
+#         while REST >= POWER: REST = REST - POWER; DIGIT_VALUE = DIGIT_VALUE + 1
+#         memory[DIGIT] = DIGIT_VALUE; DIGIT = DIGIT + 1
+# After sub, the carry flag is set when A >= B (no borrow).
+@ ALL_DONE
+	getA TOTAL; putA REST                                        # REST = TOTAL
+@ NEXT_POWER
+	getAat POW                                                   # A = memory[POW], the next power of ten
+	putA POWER                                                   # POWER = A
+	lib 0                                                        # B = 0
+	if_eq END                                                    # a power of 0 ends the table
+	inc POW                                                      # POW = POW + 1
+	lia 0; putA DIGIT_VALUE                                      # DIGIT_VALUE = 0
+@ FITS_AGAIN
+	getA REST; getB POWER                                        # A = REST, B = POWER
+	sub                                                          # A = REST - POWER
+	if_carry FITS                                                # REST >= POWER: it fits once more
+	getA DIGIT_VALUE; putAat DIGIT                                       # memory[DIGIT] = DIGIT_VALUE   (B holds the address in DIGIT)
+	inc DIGIT                                                    # DIGIT = DIGIT + 1
+	goto NEXT_POWER
+@ FITS
+	putA REST                                                    # REST = REST - POWER   (A still holds the difference)
+	inc DIGIT_VALUE                                                          # DIGIT_VALUE = DIGIT_VALUE + 1
+	goto FITS_AGAIN
+
+# The word 0 stops the CPU on its Breakpoint.
+@ END
+	non
+# ---- Powers of ten for the decimal digits, then 0 ----
+origin 0x1E00
+10000; 1000; 100; 10; 1; 0
+
+# ---- The word for each light: 1, 2, 4, ... ----
+origin 0x1E10
+1; 2; 4; 8; 16; 32; 64; 128; 256; 512; 1024; 2048; 4096; 8192; 16384; 32768
+
+
+# ---- The machines: 178, then 0xFFFF ----
+origin 0x2000
+# [..#.###.#.] (0,3,4,5) (1,4,6) (2,9) (0,4) (2,4,7,8) (0,2,3,4,5,6,7,8,9) (1,6) (1,2,5,6,7) (0,4,7,8) (0,1,2,3,5,8,9) (0,3,4,5,6,7,8,9) (4,6,9) {56,51,67,27,82,44,70,56,49,58}
+0; 0; 1; 0; 1; 1; 1; 0; 1; 0; 0xFFFF
+0; 3; 4; 5; 0xFFFE; 1; 4; 6; 0xFFFE; 2; 9; 0xFFFE; 0; 4; 0xFFFE; 2; 4; 7; 8; 0xFFFE; 0; 2; 3; 4; 5; 6; 7; 8; 9; 0xFFFE; 1; 6; 0xFFFE; 1; 2; 5; 6; 7; 0xFFFE; 0; 4; 7; 8; 0xFFFE; 0; 1; 2; 3; 5; 8; 9; 0xFFFE; 0; 3; 4; 5; 6; 7; 8; 9; 0xFFFE; 4; 6; 9; 0xFFFE; 0xFFFF
+56; 51; 67; 27; 82; 44; 70; 56; 49; 58; 0xFFFF
+# [#####....] (1,4,5) (0,1,2,4,5,6,7) (0,4,6,7) (2,4,5,6,7,8) (2,6,8) (0,2,4,7,8) (0,3,4,8) (0,1,3,5,8) (3,7) (0,2,5,6,7,8) {105,39,68,51,68,61,61,86,84}
+1; 1; 1; 1; 1; 0; 0; 0; 0; 0xFFFF
+1; 4; 5; 0xFFFE; 0; 1; 2; 4; 5; 6; 7; 0xFFFE; 0; 4; 6; 7; 0xFFFE; 2; 4; 5; 6; 7; 8; 0xFFFE; 2; 6; 8; 0xFFFE; 0; 2; 4; 7; 8; 0xFFFE; 0; 3; 4; 8; 0xFFFE; 0; 1; 3; 5; 8; 0xFFFE; 3; 7; 0xFFFE; 0; 2; 5; 6; 7; 8; 0xFFFE; 0xFFFF
+105; 39; 68; 51; 68; 61; 61; 86; 84; 0xFFFF
+# [.####.] (1,2,3,4) (1,4,5) (2) (0,1,4,5) {13,28,20,2,28,26}
+0; 1; 1; 1; 1; 0; 0xFFFF
+1; 2; 3; 4; 0xFFFE; 1; 4; 5; 0xFFFE; 2; 0xFFFE; 0; 1; 4; 5; 0xFFFE; 0xFFFF
+13; 28; 20; 2; 28; 26; 0xFFFF
+# [##..] (0,2) (0,1) (0,3) {22,14,4,4}
+1; 1; 0; 0; 0xFFFF
+0; 2; 0xFFFE; 0; 1; 0xFFFE; 0; 3; 0xFFFE; 0xFFFF
+22; 14; 4; 4; 0xFFFF
+# [.##..##] (2,5) (3,4,5) (3,5,6) (0,1,2) (0,2,3,5,6) (3,5) {18,1,38,44,3,64,36}
+0; 1; 1; 0; 0; 1; 1; 0xFFFF
+2; 5; 0xFFFE; 3; 4; 5; 0xFFFE; 3; 5; 6; 0xFFFE; 0; 1; 2; 0xFFFE; 0; 2; 3; 5; 6; 0xFFFE; 3; 5; 0xFFFE; 0xFFFF
+18; 1; 38; 44; 3; 64; 36; 0xFFFF
+# [#..##..] (1) (0,1,3,4,5) (0,1,3) (4,6) (0,1,3,4,5,6) (2,5,6) (2,3,4) (2,3) {37,48,14,45,43,36,26}
+1; 0; 0; 1; 1; 0; 0; 0xFFFF
+1; 0xFFFE; 0; 1; 3; 4; 5; 0xFFFE; 0; 1; 3; 0xFFFE; 4; 6; 0xFFFE; 0; 1; 3; 4; 5; 6; 0xFFFE; 2; 5; 6; 0xFFFE; 2; 3; 4; 0xFFFE; 2; 3; 0xFFFE; 0xFFFF
+37; 48; 14; 45; 43; 36; 26; 0xFFFF
+# [.#..#...##] (2,8) (1,2,5,7,8) (0,3,4,6,8) (1,3,4,5,6,7,8,9) (0,5,6,8,9) (1,2,3,4,7,8) (2,7,9) (1,4,5,7) (2,5,6,9) (0,2,3,6) (1,3,6) (0,1,3,4,6,8) {53,39,56,61,47,41,75,47,59,45}
+0; 1; 0; 0; 1; 0; 0; 0; 1; 1; 0xFFFF
+2; 8; 0xFFFE; 1; 2; 5; 7; 8; 0xFFFE; 0; 3; 4; 6; 8; 0xFFFE; 1; 3; 4; 5; 6; 7; 8; 9; 0xFFFE; 0; 5; 6; 8; 9; 0xFFFE; 1; 2; 3; 4; 7; 8; 0xFFFE; 2; 7; 9; 0xFFFE; 1; 4; 5; 7; 0xFFFE; 2; 5; 6; 9; 0xFFFE; 0; 2; 3; 6; 0xFFFE; 1; 3; 6; 0xFFFE; 0; 1; 3; 4; 6; 8; 0xFFFE; 0xFFFF
+53; 39; 56; 61; 47; 41; 75; 47; 59; 45; 0xFFFF
+# [....##.] (0,2,3,4,5) (0,1,5,6) (0,3,4) (2,3,6) (1,6) (5,6) {38,26,29,48,29,21,47}
+0; 0; 0; 0; 1; 1; 0; 0xFFFF
+0; 2; 3; 4; 5; 0xFFFE; 0; 1; 5; 6; 0xFFFE; 0; 3; 4; 0xFFFE; 2; 3; 6; 0xFFFE; 1; 6; 0xFFFE; 5; 6; 0xFFFE; 0xFFFF
+38; 26; 29; 48; 29; 21; 47; 0xFFFF
+# [.##..] (0,1) (0,1,2,3) (4) (0,1,4) (0,1,2) (2,4) (0,3) {65,57,43,22,34}
+0; 1; 1; 0; 0; 0xFFFF
+0; 1; 0xFFFE; 0; 1; 2; 3; 0xFFFE; 4; 0xFFFE; 0; 1; 4; 0xFFFE; 0; 1; 2; 0xFFFE; 2; 4; 0xFFFE; 0; 3; 0xFFFE; 0xFFFF
+65; 57; 43; 22; 34; 0xFFFF
+# [#...#..#] (1,2,3,5,6,7) (1,2,3,4,5,6) (0,1,3,7) (3,4,6) (0,3,5,6) (1,4,5,6,7) (1,2,3,5,7) (1,2,3,7) {16,43,37,54,2,37,22,43}
+1; 0; 0; 0; 1; 0; 0; 1; 0xFFFF
+1; 2; 3; 5; 6; 7; 0xFFFE; 1; 2; 3; 4; 5; 6; 0xFFFE; 0; 1; 3; 7; 0xFFFE; 3; 4; 6; 0xFFFE; 0; 3; 5; 6; 0xFFFE; 1; 4; 5; 6; 7; 0xFFFE; 1; 2; 3; 5; 7; 0xFFFE; 1; 2; 3; 7; 0xFFFE; 0xFFFF
+16; 43; 37; 54; 2; 37; 22; 43; 0xFFFF
+# [.#.###] (0,1,2,5) (0,2) (0,1) (0,2,3,4) (3) (1,2) (0,4,5) {54,20,33,32,32,19}
+0; 1; 0; 1; 1; 1; 0xFFFF
+0; 1; 2; 5; 0xFFFE; 0; 2; 0xFFFE; 0; 1; 0xFFFE; 0; 2; 3; 4; 0xFFFE; 3; 0xFFFE; 1; 2; 0xFFFE; 0; 4; 5; 0xFFFE; 0xFFFF
+54; 20; 33; 32; 32; 19; 0xFFFF
+# [###.#] (3,4) (0,1,2,4) (0,1,2) (1,2) (1,3) {6,23,7,29,17}
+1; 1; 1; 0; 1; 0xFFFF
+3; 4; 0xFFFE; 0; 1; 2; 4; 0xFFFE; 0; 1; 2; 0xFFFE; 1; 2; 0xFFFE; 1; 3; 0xFFFE; 0xFFFF
+6; 23; 7; 29; 17; 0xFFFF
+# [#.####..##] (2,4,6) (1,2,6,9) (0,1,2,4,5,6,7,8,9) (0,1,2,3,8) (0,1,3,5,7) (0,4,5,6,8) (1,2,3,4,6,7,8) (1,2,5,6,7) (1,3) (0,2,3,5,6,7,8) (0,1,2,3,7,8) {61,93,92,63,20,47,61,63,54,23}
+1; 0; 1; 1; 1; 1; 0; 0; 1; 1; 0xFFFF
+2; 4; 6; 0xFFFE; 1; 2; 6; 9; 0xFFFE; 0; 1; 2; 4; 5; 6; 7; 8; 9; 0xFFFE; 0; 1; 2; 3; 8; 0xFFFE; 0; 1; 3; 5; 7; 0xFFFE; 0; 4; 5; 6; 8; 0xFFFE; 1; 2; 3; 4; 6; 7; 8; 0xFFFE; 1; 2; 5; 6; 7; 0xFFFE; 1; 3; 0xFFFE; 0; 2; 3; 5; 6; 7; 8; 0xFFFE; 0; 1; 2; 3; 7; 8; 0xFFFE; 0xFFFF
+61; 93; 92; 63; 20; 47; 61; 63; 54; 23; 0xFFFF
+# [..###] (0,2,3,4) (1,2,4) (1,3) (0,1,3) {19,150,143,27,143}
+0; 0; 1; 1; 1; 0xFFFF
+0; 2; 3; 4; 0xFFFE; 1; 2; 4; 0xFFFE; 1; 3; 0xFFFE; 0; 1; 3; 0xFFFE; 0xFFFF
+19; 150; 143; 27; 143; 0xFFFF
+# [.#####.] (1,2,3,5,6) (0,1) (0,1,3,5) (2,3) (0,3,6) (0,1,2,4,5,6) (0,4,5) {154,26,19,142,16,27,114}
+0; 1; 1; 1; 1; 1; 0; 0xFFFF
+1; 2; 3; 5; 6; 0xFFFE; 0; 1; 0xFFFE; 0; 1; 3; 5; 0xFFFE; 2; 3; 0xFFFE; 0; 3; 6; 0xFFFE; 0; 1; 2; 4; 5; 6; 0xFFFE; 0; 4; 5; 0xFFFE; 0xFFFF
+154; 26; 19; 142; 16; 27; 114; 0xFFFF
+# [####..###] (1,2,3,4,5,7) (0,1,3,5,6,7) (2,7,8) (1,2,4,6,7,8) (0,3,5,7,8) (0,1,2,3,6,7,8) (1,3,4,5,7) (7,8) (3,6,8) {209,250,56,245,50,230,226,285,70}
+1; 1; 1; 1; 0; 0; 1; 1; 1; 0xFFFF
+1; 2; 3; 4; 5; 7; 0xFFFE; 0; 1; 3; 5; 6; 7; 0xFFFE; 2; 7; 8; 0xFFFE; 1; 2; 4; 6; 7; 8; 0xFFFE; 0; 3; 5; 7; 8; 0xFFFE; 0; 1; 2; 3; 6; 7; 8; 0xFFFE; 1; 3; 4; 5; 7; 0xFFFE; 7; 8; 0xFFFE; 3; 6; 8; 0xFFFE; 0xFFFF
+209; 250; 56; 245; 50; 230; 226; 285; 70; 0xFFFF
+# [#.....] (0,1) (0,3,5) (1,4) (1) (0,2) (1,2,3,4,5) (0,5) (2,3) {135,165,17,18,27,26}
+1; 0; 0; 0; 0; 0; 0xFFFF
+0; 1; 0xFFFE; 0; 3; 5; 0xFFFE; 1; 4; 0xFFFE; 1; 0xFFFE; 0; 2; 0xFFFE; 1; 2; 3; 4; 5; 0xFFFE; 0; 5; 0xFFFE; 2; 3; 0xFFFE; 0xFFFF
+135; 165; 17; 18; 27; 26; 0xFFFF
+# [##.#..##.] (3,4,5,7,8) (6,7) (1,2,3,4,5,6) (0,1,4,5) (0,2,4,5,6,7,8) (0,1,2,3,4,5,6,7) (0,6,7,8) (2,4,7,8) (0,5,6,7,8) (4,5,8) {219,193,216,209,246,243,239,259,88}
+1; 1; 0; 1; 0; 0; 1; 1; 0; 0xFFFF
+3; 4; 5; 7; 8; 0xFFFE; 6; 7; 0xFFFE; 1; 2; 3; 4; 5; 6; 0xFFFE; 0; 1; 4; 5; 0xFFFE; 0; 2; 4; 5; 6; 7; 8; 0xFFFE; 0; 1; 2; 3; 4; 5; 6; 7; 0xFFFE; 0; 6; 7; 8; 0xFFFE; 2; 4; 7; 8; 0xFFFE; 0; 5; 6; 7; 8; 0xFFFE; 4; 5; 8; 0xFFFE; 0xFFFF
+219; 193; 216; 209; 246; 243; 239; 259; 88; 0xFFFF
+# [...#...##] (1,2,3) (0,2,3,4,6,7,8) (1,2,3,4,5,6) (4,6,7,8) (0,3,5,6) (3,4,6,7,8) (2,6,8) (3) (1,2,5) (0,1,2,3,5,6,7,8) {214,55,249,251,219,65,255,217,225}
+0; 0; 0; 1; 0; 0; 0; 1; 1; 0xFFFF
+1; 2; 3; 0xFFFE; 0; 2; 3; 4; 6; 7; 8; 0xFFFE; 1; 2; 3; 4; 5; 6; 0xFFFE; 4; 6; 7; 8; 0xFFFE; 0; 3; 5; 6; 0xFFFE; 3; 4; 6; 7; 8; 0xFFFE; 2; 6; 8; 0xFFFE; 3; 0xFFFE; 1; 2; 5; 0xFFFE; 0; 1; 2; 3; 5; 6; 7; 8; 0xFFFE; 0xFFFF
+214; 55; 249; 251; 219; 65; 255; 217; 225; 0xFFFF
+# [....###] (3,4) (2) (0,2,3,4,6) (4,5,6) (0,1,2,3,4) (1,3,4,5,6) (0,3) (1,2,4,5,6) {17,16,28,29,50,32,44}
+0; 0; 0; 0; 1; 1; 1; 0xFFFF
+3; 4; 0xFFFE; 2; 0xFFFE; 0; 2; 3; 4; 6; 0xFFFE; 4; 5; 6; 0xFFFE; 0; 1; 2; 3; 4; 0xFFFE; 1; 3; 4; 5; 6; 0xFFFE; 0; 3; 0xFFFE; 1; 2; 4; 5; 6; 0xFFFE; 0xFFFF
+17; 16; 28; 29; 50; 32; 44; 0xFFFF
+# [##.#] (0,1,3) (2,3) (0,3) (0,1,2) (0,2) {22,13,14,18}
+1; 1; 0; 1; 0xFFFF
+0; 1; 3; 0xFFFE; 2; 3; 0xFFFE; 0; 3; 0xFFFE; 0; 1; 2; 0xFFFE; 0; 2; 0xFFFE; 0xFFFF
+22; 13; 14; 18; 0xFFFF
+# [##..#####] (2,4,5,6,7,8) (1,2,3,5,7,8) (0,1,3,4,6,7,8) (0,1,3,4,5,6,8) (1,7,8) (1,5,6) (4) {8,42,29,28,22,37,18,43,50}
+1; 1; 0; 0; 1; 1; 1; 1; 1; 0xFFFF
+2; 4; 5; 6; 7; 8; 0xFFFE; 1; 2; 3; 5; 7; 8; 0xFFFE; 0; 1; 3; 4; 6; 7; 8; 0xFFFE; 0; 1; 3; 4; 5; 6; 8; 0xFFFE; 1; 7; 8; 0xFFFE; 1; 5; 6; 0xFFFE; 4; 0xFFFE; 0xFFFF
+8; 42; 29; 28; 22; 37; 18; 43; 50; 0xFFFF
+# [##..] (0,3) (2) (0,2) (1,2) {20,106,123,13}
+1; 1; 0; 0; 0xFFFF
+0; 3; 0xFFFE; 2; 0xFFFE; 0; 2; 0xFFFE; 1; 2; 0xFFFE; 0xFFFF
+20; 106; 123; 13; 0xFFFF
+# [#....#] (0,5) (3,5) (0,1,2) (0,3,4) (1,5) (3) (0,3,4,5) {61,29,19,45,22,60}
+1; 0; 0; 0; 0; 1; 0xFFFF
+0; 5; 0xFFFE; 3; 5; 0xFFFE; 0; 1; 2; 0xFFFE; 0; 3; 4; 0xFFFE; 1; 5; 0xFFFE; 3; 0xFFFE; 0; 3; 4; 5; 0xFFFE; 0xFFFF
+61; 29; 19; 45; 22; 60; 0xFFFF
+# [.#...] (0) (0,1,3) (4) (1,2,3,4) (0,2) (0,1,3,4) (0,3,4) {36,12,15,28,32}
+0; 1; 0; 0; 0; 0xFFFF
+0; 0xFFFE; 0; 1; 3; 0xFFFE; 4; 0xFFFE; 1; 2; 3; 4; 0xFFFE; 0; 2; 0xFFFE; 0; 1; 3; 4; 0xFFFE; 0; 3; 4; 0xFFFE; 0xFFFF
+36; 12; 15; 28; 32; 0xFFFF
+# [#...#] (2,4) (2,3) (0,2) (0,3,4) (3,4) (0,1,2,3) (1,2,4) {20,6,58,27,38}
+1; 0; 0; 0; 1; 0xFFFF
+2; 4; 0xFFFE; 2; 3; 0xFFFE; 0; 2; 0xFFFE; 0; 3; 4; 0xFFFE; 3; 4; 0xFFFE; 0; 1; 2; 3; 0xFFFE; 1; 2; 4; 0xFFFE; 0xFFFF
+20; 6; 58; 27; 38; 0xFFFF
+# [#..#####] (2,4) (0,1,2,5,7) (2,6) (0,2,3,6,7) (0,1,3,5) (0,4,7) (0,3,4,5,6,7) (0,1,2,4) {50,26,37,31,47,34,27,27}
+1; 0; 0; 1; 1; 1; 1; 1; 0xFFFF
+2; 4; 0xFFFE; 0; 1; 2; 5; 7; 0xFFFE; 2; 6; 0xFFFE; 0; 2; 3; 6; 7; 0xFFFE; 0; 1; 3; 5; 0xFFFE; 0; 4; 7; 0xFFFE; 0; 3; 4; 5; 6; 7; 0xFFFE; 0; 1; 2; 4; 0xFFFE; 0xFFFF
+50; 26; 37; 31; 47; 34; 27; 27; 0xFFFF
+# [#..###] (1,2,4,5) (0,3,4,5) (0,3,4) (1,4) (0,1,3) (0,1,2,4) (1,2) (3) {43,66,39,162,44,10}
+1; 0; 0; 1; 1; 1; 0xFFFF
+1; 2; 4; 5; 0xFFFE; 0; 3; 4; 5; 0xFFFE; 0; 3; 4; 0xFFFE; 1; 4; 0xFFFE; 0; 1; 3; 0xFFFE; 0; 1; 2; 4; 0xFFFE; 1; 2; 0xFFFE; 3; 0xFFFE; 0xFFFF
+43; 66; 39; 162; 44; 10; 0xFFFF
+# [.#..#..] (2,4,5,6) (0,3) (0,3,5) (1,4) (0,1,2,5,6) (1,2,3,4,5,6) {50,43,36,41,28,54,36}
+0; 1; 0; 0; 1; 0; 0; 0xFFFF
+2; 4; 5; 6; 0xFFFE; 0; 3; 0xFFFE; 0; 3; 5; 0xFFFE; 1; 4; 0xFFFE; 0; 1; 2; 5; 6; 0xFFFE; 1; 2; 3; 4; 5; 6; 0xFFFE; 0xFFFF
+50; 43; 36; 41; 28; 54; 36; 0xFFFF
+# [....##.] (1,2,3,6) (0,1,4) (1,2,4,5,6) (0,4,5,6) (1,2,3,4,5,6) (1,2,3,4,5) (1,2,3) {24,53,40,20,53,40,45}
+0; 0; 0; 0; 1; 1; 0; 0xFFFF
+1; 2; 3; 6; 0xFFFE; 0; 1; 4; 0xFFFE; 1; 2; 4; 5; 6; 0xFFFE; 0; 4; 5; 6; 0xFFFE; 1; 2; 3; 4; 5; 6; 0xFFFE; 1; 2; 3; 4; 5; 0xFFFE; 1; 2; 3; 0xFFFE; 0xFFFF
+24; 53; 40; 20; 53; 40; 45; 0xFFFF
+# [.#.###] (0,2,3,4,5) (0,2) (0,1,5) (0,3,4) {155,9,145,139,139,147}
+0; 1; 0; 1; 1; 1; 0xFFFF
+0; 2; 3; 4; 5; 0xFFFE; 0; 2; 0xFFFE; 0; 1; 5; 0xFFFE; 0; 3; 4; 0xFFFE; 0xFFFF
+155; 9; 145; 139; 139; 147; 0xFFFF
+# [.#.##.##.#] (0,1,2,3,4,5,7,9) (1,2,4,6,8) (0,2,3,4) (3,4,5,6,8,9) (1,5,9) (3,4,6,8,9) (2,3,4,7) (1,3,4,5,6,7,9) (3,8,9) (0,1,2,4,5,7,9) {52,67,58,102,106,85,50,52,52,115}
+0; 1; 0; 1; 1; 0; 1; 1; 0; 1; 0xFFFF
+0; 1; 2; 3; 4; 5; 7; 9; 0xFFFE; 1; 2; 4; 6; 8; 0xFFFE; 0; 2; 3; 4; 0xFFFE; 3; 4; 5; 6; 8; 9; 0xFFFE; 1; 5; 9; 0xFFFE; 3; 4; 6; 8; 9; 0xFFFE; 2; 3; 4; 7; 0xFFFE; 1; 3; 4; 5; 6; 7; 9; 0xFFFE; 3; 8; 9; 0xFFFE; 0; 1; 2; 4; 5; 7; 9; 0xFFFE; 0xFFFF
+52; 67; 58; 102; 106; 85; 50; 52; 52; 115; 0xFFFF
+# [#.#..##] (3,4) (1,3,6) (2,3,4) (1,2,3,5) (0,1,3,5) {3,15,6,38,23,4,11}
+1; 0; 1; 0; 0; 1; 1; 0xFFFF
+3; 4; 0xFFFE; 1; 3; 6; 0xFFFE; 2; 3; 4; 0xFFFE; 1; 2; 3; 5; 0xFFFE; 0; 1; 3; 5; 0xFFFE; 0xFFFF
+3; 15; 6; 38; 23; 4; 11; 0xFFFF
+# [#..#.#.##] (0,1,3,5,6,7,8) (4,5) (0,1,2,3,8) (0,3,4,5,6) (0,3,5,7,8) (2,3,5) (0,3,5,6,7) (2,3,6,7) {40,13,16,53,199,234,31,32,24}
+1; 0; 0; 1; 0; 1; 0; 1; 1; 0xFFFF
+0; 1; 3; 5; 6; 7; 8; 0xFFFE; 4; 5; 0xFFFE; 0; 1; 2; 3; 8; 0xFFFE; 0; 3; 4; 5; 6; 0xFFFE; 0; 3; 5; 7; 8; 0xFFFE; 2; 3; 5; 0xFFFE; 0; 3; 5; 6; 7; 0xFFFE; 2; 3; 6; 7; 0xFFFE; 0xFFFF
+40; 13; 16; 53; 199; 234; 31; 32; 24; 0xFFFF
+# [##.#.] (0,1,2) (1) (0,2,3,4) (1,3,4) (0,3) (2) {31,24,27,41,34}
+1; 1; 0; 1; 0; 0xFFFF
+0; 1; 2; 0xFFFE; 1; 0xFFFE; 0; 2; 3; 4; 0xFFFE; 1; 3; 4; 0xFFFE; 0; 3; 0xFFFE; 2; 0xFFFE; 0xFFFF
+31; 24; 27; 41; 34; 0xFFFF
+# [...##....] (3,4,6,7,8) (0,5,7,8) (0,1,3,4,5,6,8) (3,4) (0,1,2,6) (1,6) (0,1,3,4,5,6,7) (2,3,5,6) (0,2,6,8) (4,5) {71,48,35,55,65,46,73,30,50}
+0; 0; 0; 1; 1; 0; 0; 0; 0; 0xFFFF
+3; 4; 6; 7; 8; 0xFFFE; 0; 5; 7; 8; 0xFFFE; 0; 1; 3; 4; 5; 6; 8; 0xFFFE; 3; 4; 0xFFFE; 0; 1; 2; 6; 0xFFFE; 1; 6; 0xFFFE; 0; 1; 3; 4; 5; 6; 7; 0xFFFE; 2; 3; 5; 6; 0xFFFE; 0; 2; 6; 8; 0xFFFE; 4; 5; 0xFFFE; 0xFFFF
+71; 48; 35; 55; 65; 46; 73; 30; 50; 0xFFFF
+# [###.] (1,2,3) (0,1,2) {15,145,145,130}
+1; 1; 1; 0; 0xFFFF
+1; 2; 3; 0xFFFE; 0; 1; 2; 0xFFFE; 0xFFFF
+15; 145; 145; 130; 0xFFFF
+# [..##..] (0,1,2,4) (0,1,5) (1) (0,1,3,4) (0,1,4,5) {40,49,18,4,34,18}
+0; 0; 1; 1; 0; 0; 0xFFFF
+0; 1; 2; 4; 0xFFFE; 0; 1; 5; 0xFFFE; 1; 0xFFFE; 0; 1; 3; 4; 0xFFFE; 0; 1; 4; 5; 0xFFFE; 0xFFFF
+40; 49; 18; 4; 34; 18; 0xFFFF
+# [...##.] (2,5) (0,2) (1,3,4) (0,1,4) (1,3) (0,1,2,4) {37,34,48,13,26,15}
+0; 0; 0; 1; 1; 0; 0xFFFF
+2; 5; 0xFFFE; 0; 2; 0xFFFE; 1; 3; 4; 0xFFFE; 0; 1; 4; 0xFFFE; 1; 3; 0xFFFE; 0; 1; 2; 4; 0xFFFE; 0xFFFF
+37; 34; 48; 13; 26; 15; 0xFFFF
+# [.#...##] (2,3,4) (2,3,5,6) (0,3) (1,2,3,4,5) (5,6) (2,3,4,5,6) (1,5,6) (1) (0,1,2,3,6) {16,35,71,74,38,63,67}
+0; 1; 0; 0; 0; 1; 1; 0xFFFF
+2; 3; 4; 0xFFFE; 2; 3; 5; 6; 0xFFFE; 0; 3; 0xFFFE; 1; 2; 3; 4; 5; 0xFFFE; 5; 6; 0xFFFE; 2; 3; 4; 5; 6; 0xFFFE; 1; 5; 6; 0xFFFE; 1; 0xFFFE; 0; 1; 2; 3; 6; 0xFFFE; 0xFFFF
+16; 35; 71; 74; 38; 63; 67; 0xFFFF
+# [#.###] (2,3,4) (0,3) (1,4) (2,4) (0,1,3) (0,2,4) (0,4) {57,17,20,43,39}
+1; 0; 1; 1; 1; 0xFFFF
+2; 3; 4; 0xFFFE; 0; 3; 0xFFFE; 1; 4; 0xFFFE; 2; 4; 0xFFFE; 0; 1; 3; 0xFFFE; 0; 2; 4; 0xFFFE; 0; 4; 0xFFFE; 0xFFFF
+57; 17; 20; 43; 39; 0xFFFF
+# [....###.#] (1,2,3,5,6,8) (0,1,2,5,8) (0,1,2,7,8) (0,1,4,5,6,7,8) (0,1,2,3,4,6,8) (0,1,5) (0,3,6) (1,6) (0,1,7,8) {36,57,39,27,6,40,35,3,42}
+0; 0; 0; 0; 1; 1; 1; 0; 1; 0xFFFF
+1; 2; 3; 5; 6; 8; 0xFFFE; 0; 1; 2; 5; 8; 0xFFFE; 0; 1; 2; 7; 8; 0xFFFE; 0; 1; 4; 5; 6; 7; 8; 0xFFFE; 0; 1; 2; 3; 4; 6; 8; 0xFFFE; 0; 1; 5; 0xFFFE; 0; 3; 6; 0xFFFE; 1; 6; 0xFFFE; 0; 1; 7; 8; 0xFFFE; 0xFFFF
+36; 57; 39; 27; 6; 40; 35; 3; 42; 0xFFFF
+# [#.#.#..#..] (0,1,2,5,6,7) (0,1,2,3,5,6,9) (0,3,4,7,8,9) (1,4,5,9) (1,5,8,9) (1,3,6,7,8,9) (0,1,2,3,4,6,7) (0,1,4,5,6,7,8) (3,4,5,7,8,9) (0,5,6,7,8) (2,6,7,9) (0,2,3,4,5,7,8,9) {29,35,24,25,37,48,28,41,24,35}
+1; 0; 1; 0; 1; 0; 0; 1; 0; 0; 0xFFFF
+0; 1; 2; 5; 6; 7; 0xFFFE; 0; 1; 2; 3; 5; 6; 9; 0xFFFE; 0; 3; 4; 7; 8; 9; 0xFFFE; 1; 4; 5; 9; 0xFFFE; 1; 5; 8; 9; 0xFFFE; 1; 3; 6; 7; 8; 9; 0xFFFE; 0; 1; 2; 3; 4; 6; 7; 0xFFFE; 0; 1; 4; 5; 6; 7; 8; 0xFFFE; 3; 4; 5; 7; 8; 9; 0xFFFE; 0; 5; 6; 7; 8; 0xFFFE; 2; 6; 7; 9; 0xFFFE; 0; 2; 3; 4; 5; 7; 8; 9; 0xFFFE; 0xFFFF
+29; 35; 24; 25; 37; 48; 28; 41; 24; 35; 0xFFFF
+# [...###] (1,3,4) (1,2) (4) (1,3,4,5) (0,1,2,5) (2,3,4) (0,1,2,3) (1,2,5) {31,60,59,57,54,26}
+0; 0; 0; 1; 1; 1; 0xFFFF
+1; 3; 4; 0xFFFE; 1; 2; 0xFFFE; 4; 0xFFFE; 1; 3; 4; 5; 0xFFFE; 0; 1; 2; 5; 0xFFFE; 2; 3; 4; 0xFFFE; 0; 1; 2; 3; 0xFFFE; 1; 2; 5; 0xFFFE; 0xFFFF
+31; 60; 59; 57; 54; 26; 0xFFFF
+# [#..#.###..] (0,3,6,7,8) (2) (1,3,5,6,7,8,9) (0,1,2,3,4,5,6,8) (0,2,3,4,5,6) (5,8) (1,3) (0,1,3,6,7,8,9) (3,5,7,9) {41,44,30,73,14,42,52,45,52,33}
+1; 0; 0; 1; 0; 1; 1; 1; 0; 0; 0xFFFF
+0; 3; 6; 7; 8; 0xFFFE; 2; 0xFFFE; 1; 3; 5; 6; 7; 8; 9; 0xFFFE; 0; 1; 2; 3; 4; 5; 6; 8; 0xFFFE; 0; 2; 3; 4; 5; 6; 0xFFFE; 5; 8; 0xFFFE; 1; 3; 0xFFFE; 0; 1; 3; 6; 7; 8; 9; 0xFFFE; 3; 5; 7; 9; 0xFFFE; 0xFFFF
+41; 44; 30; 73; 14; 42; 52; 45; 52; 33; 0xFFFF
+# [..##.###] (0,1,3,4) (0,1,3,4,6) (0,1,2,3,5,6) (7) (0,2,3,4,5,7) (2,3,5,6,7) (0,2,5,6) (2,5) (1,3,5,7) (0,2,3,5,6) {53,25,73,63,25,80,42,37}
+0; 0; 1; 1; 0; 1; 1; 1; 0xFFFF
+0; 1; 3; 4; 0xFFFE; 0; 1; 3; 4; 6; 0xFFFE; 0; 1; 2; 3; 5; 6; 0xFFFE; 7; 0xFFFE; 0; 2; 3; 4; 5; 7; 0xFFFE; 2; 3; 5; 6; 7; 0xFFFE; 0; 2; 5; 6; 0xFFFE; 2; 5; 0xFFFE; 1; 3; 5; 7; 0xFFFE; 0; 2; 3; 5; 6; 0xFFFE; 0xFFFF
+53; 25; 73; 63; 25; 80; 42; 37; 0xFFFF
+# [..#.#..#] (0,3) (2,6) (2,3,6) (0,4,7) (1,2,3) (5) (1,2,7) (4,5) (0,2,4,7) (2,5) {19,20,48,22,29,29,13,25}
+0; 0; 1; 0; 1; 0; 0; 1; 0xFFFF
+0; 3; 0xFFFE; 2; 6; 0xFFFE; 2; 3; 6; 0xFFFE; 0; 4; 7; 0xFFFE; 1; 2; 3; 0xFFFE; 5; 0xFFFE; 1; 2; 7; 0xFFFE; 4; 5; 0xFFFE; 0; 2; 4; 7; 0xFFFE; 2; 5; 0xFFFE; 0xFFFF
+19; 20; 48; 22; 29; 29; 13; 25; 0xFFFF
+# [..###.] (4) (0,3,4) (0,1,2,3) (0,2,5) (1,3,4) (2,4,5) {16,17,146,20,161,134}
+0; 0; 1; 1; 1; 0; 0xFFFF
+4; 0xFFFE; 0; 3; 4; 0xFFFE; 0; 1; 2; 3; 0xFFFE; 0; 2; 5; 0xFFFE; 1; 3; 4; 0xFFFE; 2; 4; 5; 0xFFFE; 0xFFFF
+16; 17; 146; 20; 161; 134; 0xFFFF
+# [#..##.#..] (0,1,2,3,4,5,7) (0,5,8) (0,5,6,7,8) (2,5,6) (0,1,2,4,6,7,8) (2,4,5,8) (0,1,2,4,7,8) (3,7) (1,2,3,5,6) (1,2,3) (2,4,6,7,8) {212,208,239,25,211,60,222,213,223}
+1; 0; 0; 1; 1; 0; 1; 0; 0; 0xFFFF
+0; 1; 2; 3; 4; 5; 7; 0xFFFE; 0; 5; 8; 0xFFFE; 0; 5; 6; 7; 8; 0xFFFE; 2; 5; 6; 0xFFFE; 0; 1; 2; 4; 6; 7; 8; 0xFFFE; 2; 4; 5; 8; 0xFFFE; 0; 1; 2; 4; 7; 8; 0xFFFE; 3; 7; 0xFFFE; 1; 2; 3; 5; 6; 0xFFFE; 1; 2; 3; 0xFFFE; 2; 4; 6; 7; 8; 0xFFFE; 0xFFFF
+212; 208; 239; 25; 211; 60; 222; 213; 223; 0xFFFF
+# [.#.##..#] (2,4) (0,1,3,4) (2,6) (4) (1,2,3,5) (1,2,7) (3,5) (0,1,2,3,4,7) (1,2,4) (0,1,6) {36,60,54,31,47,13,31,11}
+0; 1; 0; 1; 1; 0; 0; 1; 0xFFFF
+2; 4; 0xFFFE; 0; 1; 3; 4; 0xFFFE; 2; 6; 0xFFFE; 4; 0xFFFE; 1; 2; 3; 5; 0xFFFE; 1; 2; 7; 0xFFFE; 3; 5; 0xFFFE; 0; 1; 2; 3; 4; 7; 0xFFFE; 1; 2; 4; 0xFFFE; 0; 1; 6; 0xFFFE; 0xFFFF
+36; 60; 54; 31; 47; 13; 31; 11; 0xFFFF
+# [##.....] (0,3) (2,5) (0,2,3,5,6) (0,1,2,4,5,6) (0,3,4,5,6) (1,2,3,5,6) {29,12,44,37,8,50,32}
+1; 1; 0; 0; 0; 0; 0; 0xFFFF
+0; 3; 0xFFFE; 2; 5; 0xFFFE; 0; 2; 3; 5; 6; 0xFFFE; 0; 1; 2; 4; 5; 6; 0xFFFE; 0; 3; 4; 5; 6; 0xFFFE; 1; 2; 3; 5; 6; 0xFFFE; 0xFFFF
+29; 12; 44; 37; 8; 50; 32; 0xFFFF
+# [#.#..#] (2,3,5) (1,4) (1,2,3,4) (3,5) (0,2,3,5) (0,2) {26,9,52,56,9,50}
+1; 0; 1; 0; 0; 1; 0xFFFF
+2; 3; 5; 0xFFFE; 1; 4; 0xFFFE; 1; 2; 3; 4; 0xFFFE; 3; 5; 0xFFFE; 0; 2; 3; 5; 0xFFFE; 0; 2; 0xFFFE; 0xFFFF
+26; 9; 52; 56; 9; 50; 0xFFFF
+# [#.#.] (1,2) (2) (2,3) (0,1,2) (0,2) (1,2,3) {26,170,214,156}
+1; 0; 1; 0; 0xFFFF
+1; 2; 0xFFFE; 2; 0xFFFE; 2; 3; 0xFFFE; 0; 1; 2; 0xFFFE; 0; 2; 0xFFFE; 1; 2; 3; 0xFFFE; 0xFFFF
+26; 170; 214; 156; 0xFFFF
+# [#.#..##...] (1,2,4,6,7) (1,3,4) (1,2,5,6,7,8,9) (2,3,8,9) (0,1,3,7,8,9) (0,2,4,6,7,8,9) (0,1,9) (0,1,2,3,4,5,6,7,9) (2,4,5,7,8) (0,7) (5,7) (3,7,9) {48,64,66,40,47,47,51,92,42,82}
+1; 0; 1; 0; 0; 1; 1; 0; 0; 0; 0xFFFF
+1; 2; 4; 6; 7; 0xFFFE; 1; 3; 4; 0xFFFE; 1; 2; 5; 6; 7; 8; 9; 0xFFFE; 2; 3; 8; 9; 0xFFFE; 0; 1; 3; 7; 8; 9; 0xFFFE; 0; 2; 4; 6; 7; 8; 9; 0xFFFE; 0; 1; 9; 0xFFFE; 0; 1; 2; 3; 4; 5; 6; 7; 9; 0xFFFE; 2; 4; 5; 7; 8; 0xFFFE; 0; 7; 0xFFFE; 5; 7; 0xFFFE; 3; 7; 9; 0xFFFE; 0xFFFF
+48; 64; 66; 40; 47; 47; 51; 92; 42; 82; 0xFFFF
+# [.....#...] (0,1,2,4,5,6,7) (1,4,5,7) (0,1,2,4) (0,2,3,4,5,6,7,8) (1,2,3,7,8) (0,1,2,4,5,6,8) (5) (3,6) {35,50,38,9,53,62,34,43,21}
+0; 0; 0; 0; 0; 1; 0; 0; 0; 0xFFFF
+0; 1; 2; 4; 5; 6; 7; 0xFFFE; 1; 4; 5; 7; 0xFFFE; 0; 1; 2; 4; 0xFFFE; 0; 2; 3; 4; 5; 6; 7; 8; 0xFFFE; 1; 2; 3; 7; 8; 0xFFFE; 0; 1; 2; 4; 5; 6; 8; 0xFFFE; 5; 0xFFFE; 3; 6; 0xFFFE; 0xFFFF
+35; 50; 38; 9; 53; 62; 34; 43; 21; 0xFFFF
+# [###..#..] (1,2,6) (0,5) (0,4,5) (1,2,4,5,6,7) (5,6,7) (0,1) (0,4) (1,2,3,4,6,7) (2,6) (0,2,3,4,5,6) {62,48,62,22,56,42,67,21}
+1; 1; 1; 0; 0; 1; 0; 0; 0xFFFF
+1; 2; 6; 0xFFFE; 0; 5; 0xFFFE; 0; 4; 5; 0xFFFE; 1; 2; 4; 5; 6; 7; 0xFFFE; 5; 6; 7; 0xFFFE; 0; 1; 0xFFFE; 0; 4; 0xFFFE; 1; 2; 3; 4; 6; 7; 0xFFFE; 2; 6; 0xFFFE; 0; 2; 3; 4; 5; 6; 0xFFFE; 0xFFFF
+62; 48; 62; 22; 56; 42; 67; 21; 0xFFFF
+# [...###] (3,4) (3,4,5) (2,3) (0,5) (1,3,5) (1,3,4) {16,9,5,185,171,182}
+0; 0; 0; 1; 1; 1; 0xFFFF
+3; 4; 0xFFFE; 3; 4; 5; 0xFFFE; 2; 3; 0xFFFE; 0; 5; 0xFFFE; 1; 3; 5; 0xFFFE; 1; 3; 4; 0xFFFE; 0xFFFF
+16; 9; 5; 185; 171; 182; 0xFFFF
+# [.##..####] (0,1,2,3,4,5,8) (3,5) (1,2,5,6,7,8) (0,2,3,6,8) (4,8) (0,1,2,3,4,5,6,7) (4,5,6,7) (3,7) (1,3,5,6) {55,63,63,87,57,94,82,49,45}
+0; 1; 1; 0; 0; 1; 1; 1; 1; 0xFFFF
+0; 1; 2; 3; 4; 5; 8; 0xFFFE; 3; 5; 0xFFFE; 1; 2; 5; 6; 7; 8; 0xFFFE; 0; 2; 3; 6; 8; 0xFFFE; 4; 8; 0xFFFE; 0; 1; 2; 3; 4; 5; 6; 7; 0xFFFE; 4; 5; 6; 7; 0xFFFE; 3; 7; 0xFFFE; 1; 3; 5; 6; 0xFFFE; 0xFFFF
+55; 63; 63; 87; 57; 94; 82; 49; 45; 0xFFFF
+# [..###] (0,2,3) (0,1,2,3) (0,1,4) {29,22,11,11,18}
+0; 0; 1; 1; 1; 0xFFFF
+0; 2; 3; 0xFFFE; 0; 1; 2; 3; 0xFFFE; 0; 1; 4; 0xFFFE; 0xFFFF
+29; 22; 11; 11; 18; 0xFFFF
+# [####] (0,1,2,3) (0,2,3) {13,0,13,13}
+1; 1; 1; 1; 0xFFFF
+0; 1; 2; 3; 0xFFFE; 0; 2; 3; 0xFFFE; 0xFFFF
+13; 0; 13; 13; 0xFFFF
+# [##...#.#] (3,4) (0,3,4,5,6,7) (0,1,5,7) (1,3,4,5,6) (1,2,3,5,6) (0,1,3,7) {48,36,0,44,29,36,18,48}
+1; 1; 0; 0; 0; 1; 0; 1; 0xFFFF
+3; 4; 0xFFFE; 0; 3; 4; 5; 6; 7; 0xFFFE; 0; 1; 5; 7; 0xFFFE; 1; 3; 4; 5; 6; 0xFFFE; 1; 2; 3; 5; 6; 0xFFFE; 0; 1; 3; 7; 0xFFFE; 0xFFFF
+48; 36; 0; 44; 29; 36; 18; 48; 0xFFFF
+# [.#.###....] (1,2,3,4,6,7,8,9) (4) (1,4,6) (0,1,4,5,9) (2,8,9) (0,1,3,4,6,7,8) (0,1,2,3,4,5,7,8) (1,3,4,5,9) (0,1,3,4,6,7,8,9) (1,2,4,5,6,7,9) (0,1,6,7,9) (0,1,2,3,4,5,6,7) {54,105,40,49,96,57,71,64,33,68}
+0; 1; 0; 1; 1; 1; 0; 0; 0; 0; 0xFFFF
+1; 2; 3; 4; 6; 7; 8; 9; 0xFFFE; 4; 0xFFFE; 1; 4; 6; 0xFFFE; 0; 1; 4; 5; 9; 0xFFFE; 2; 8; 9; 0xFFFE; 0; 1; 3; 4; 6; 7; 8; 0xFFFE; 0; 1; 2; 3; 4; 5; 7; 8; 0xFFFE; 1; 3; 4; 5; 9; 0xFFFE; 0; 1; 3; 4; 6; 7; 8; 9; 0xFFFE; 1; 2; 4; 5; 6; 7; 9; 0xFFFE; 0; 1; 6; 7; 9; 0xFFFE; 0; 1; 2; 3; 4; 5; 6; 7; 0xFFFE; 0xFFFF
+54; 105; 40; 49; 96; 57; 71; 64; 33; 68; 0xFFFF
+# [###.#.] (0,1,2,3,5) (0,2,3,4) (2,3,4) (0,1,3) {39,19,28,40,21,7}
+1; 1; 1; 0; 1; 0; 0xFFFF
+0; 1; 2; 3; 5; 0xFFFE; 0; 2; 3; 4; 0xFFFE; 2; 3; 4; 0xFFFE; 0; 1; 3; 0xFFFE; 0xFFFF
+39; 19; 28; 40; 21; 7; 0xFFFF
+# [.####.#..] (6,7) (1,2,3,4,6) (0,2,7) (1,5,7,8) (0,8) (0,1,2,4,5,7,8) (2,4,6) (0,4,5,6,7) (1,3,8) {46,51,49,28,49,35,33,51,39}
+0; 1; 1; 1; 1; 0; 1; 0; 0; 0xFFFF
+6; 7; 0xFFFE; 1; 2; 3; 4; 6; 0xFFFE; 0; 2; 7; 0xFFFE; 1; 5; 7; 8; 0xFFFE; 0; 8; 0xFFFE; 0; 1; 2; 4; 5; 7; 8; 0xFFFE; 2; 4; 6; 0xFFFE; 0; 4; 5; 6; 7; 0xFFFE; 1; 3; 8; 0xFFFE; 0xFFFF
+46; 51; 49; 28; 49; 35; 33; 51; 39; 0xFFFF
+# [#......#.] (0,1,3,4,5,7,8) (4,5,6,7) (0,2,3,5,7,8) (1,2,3,4,5,6,7,8) (3,7) (4,8) (1,6,8) {16,19,15,23,28,34,30,38,37}
+1; 0; 0; 0; 0; 0; 0; 1; 0; 0xFFFF
+0; 1; 3; 4; 5; 7; 8; 0xFFFE; 4; 5; 6; 7; 0xFFFE; 0; 2; 3; 5; 7; 8; 0xFFFE; 1; 2; 3; 4; 5; 6; 7; 8; 0xFFFE; 3; 7; 0xFFFE; 4; 8; 0xFFFE; 1; 6; 8; 0xFFFE; 0xFFFF
+16; 19; 15; 23; 28; 34; 30; 38; 37; 0xFFFF
+# [.#..##] (1,4,5) (0,1,2,5) (0,3,5) (0,1,2,3,4) (0,2) {39,27,23,21,21,38}
+0; 1; 0; 0; 1; 1; 0xFFFF
+1; 4; 5; 0xFFFE; 0; 1; 2; 5; 0xFFFE; 0; 3; 5; 0xFFFE; 0; 1; 2; 3; 4; 0xFFFE; 0; 2; 0xFFFE; 0xFFFF
+39; 27; 23; 21; 21; 38; 0xFFFF
+# [..###..] (0,3,4,5,6) (0,5) (2,4,5,6) (1,5) (0,1,2,4,6) (2,3,4) {38,29,23,32,41,49,27}
+0; 0; 1; 1; 1; 0; 0; 0xFFFF
+0; 3; 4; 5; 6; 0xFFFE; 0; 5; 0xFFFE; 2; 4; 5; 6; 0xFFFE; 1; 5; 0xFFFE; 0; 1; 2; 4; 6; 0xFFFE; 2; 3; 4; 0xFFFE; 0xFFFF
+38; 29; 23; 32; 41; 49; 27; 0xFFFF
+# [#..#.#.#.#] (2,3,4,5,6,7,8) (2,4,5,6,8) (0,3,5,6,7,8) (0,1,2,7,8,9) (2,5) (0,2,4,6,8,9) (1,2,4,6,7,8) (0,2,3,9) {22,16,78,34,52,68,66,44,66,8}
+1; 0; 0; 1; 0; 1; 0; 1; 0; 1; 0xFFFF
+2; 3; 4; 5; 6; 7; 8; 0xFFFE; 2; 4; 5; 6; 8; 0xFFFE; 0; 3; 5; 6; 7; 8; 0xFFFE; 0; 1; 2; 7; 8; 9; 0xFFFE; 2; 5; 0xFFFE; 0; 2; 4; 6; 8; 9; 0xFFFE; 1; 2; 4; 6; 7; 8; 0xFFFE; 0; 2; 3; 9; 0xFFFE; 0xFFFF
+22; 16; 78; 34; 52; 68; 66; 44; 66; 8; 0xFFFF
+# [..#.#] (2,3) (0) (1,2,4) (0,2,3) (1) (0,2) (2,4) {17,15,46,19,25}
+0; 0; 1; 0; 1; 0xFFFF
+2; 3; 0xFFFE; 0; 0xFFFE; 1; 2; 4; 0xFFFE; 0; 2; 3; 0xFFFE; 1; 0xFFFE; 0; 2; 0xFFFE; 2; 4; 0xFFFE; 0xFFFF
+17; 15; 46; 19; 25; 0xFFFF
+# [#..#.#.] (0,5) (4) (0,2,4,5,6) (0,1) (0,2) (1,3,4) (0,2,3) {30,11,19,8,21,5,3}
+1; 0; 0; 1; 0; 1; 0; 0xFFFF
+0; 5; 0xFFFE; 4; 0xFFFE; 0; 2; 4; 5; 6; 0xFFFE; 0; 1; 0xFFFE; 0; 2; 0xFFFE; 1; 3; 4; 0xFFFE; 0; 2; 3; 0xFFFE; 0xFFFF
+30; 11; 19; 8; 21; 5; 3; 0xFFFF
+# [.####....#] (0,1,2,4,6,7,9) (0,1,3,4,5,7,8,9) (3,4,6,8) (2,5,6,8) (0,2,3,5,7,8,9) (0,1,5,7,9) (1,2,6) (1,2,3,4,5,9) (0,1,2,4,5,6,8,9) (1,2,4,5,6,9) (1,3) (0,1,2,6,7,8,9) (0,1,2,3,4) {82,113,122,47,76,67,90,53,59,91}
+0; 1; 1; 1; 1; 0; 0; 0; 0; 1; 0xFFFF
+0; 1; 2; 4; 6; 7; 9; 0xFFFE; 0; 1; 3; 4; 5; 7; 8; 9; 0xFFFE; 3; 4; 6; 8; 0xFFFE; 2; 5; 6; 8; 0xFFFE; 0; 2; 3; 5; 7; 8; 9; 0xFFFE; 0; 1; 5; 7; 9; 0xFFFE; 1; 2; 6; 0xFFFE; 1; 2; 3; 4; 5; 9; 0xFFFE; 0; 1; 2; 4; 5; 6; 8; 9; 0xFFFE; 1; 2; 4; 5; 6; 9; 0xFFFE; 1; 3; 0xFFFE; 0; 1; 2; 6; 7; 8; 9; 0xFFFE; 0; 1; 2; 3; 4; 0xFFFE; 0xFFFF
+82; 113; 122; 47; 76; 67; 90; 53; 59; 91; 0xFFFF
+# [.#.#..] (1,2,3,4) (1,4,5) (1,3) (0,1,4,5) {19,58,11,26,43,32}
+0; 1; 0; 1; 0; 0; 0xFFFF
+1; 2; 3; 4; 0xFFFE; 1; 4; 5; 0xFFFE; 1; 3; 0xFFFE; 0; 1; 4; 5; 0xFFFE; 0xFFFF
+19; 58; 11; 26; 43; 32; 0xFFFF
+# [##.##...] (0,2,4,6,7) (0,1,6,7) (0,1,4,5,7) (2,3,4,5,6,7) (1,3,4,7) (0,1,3,5,6) {33,25,23,20,33,24,38,43}
+1; 1; 0; 1; 1; 0; 0; 0; 0xFFFF
+0; 2; 4; 6; 7; 0xFFFE; 0; 1; 6; 7; 0xFFFE; 0; 1; 4; 5; 7; 0xFFFE; 2; 3; 4; 5; 6; 7; 0xFFFE; 1; 3; 4; 7; 0xFFFE; 0; 1; 3; 5; 6; 0xFFFE; 0xFFFF
+33; 25; 23; 20; 33; 24; 38; 43; 0xFFFF
+# [##.##.#...] (0,1,2,3,6,7,8,9) (0,1,5,6) (1,5) (0,1,2,3,4,7,8,9) (0,1,2) (6,7) (3) (2,3,4,5,6,7,8,9) (0,1,2,4,5,6,8,9) (2,3,6,7,8,9) {50,61,47,48,18,36,41,33,33,33}
+1; 1; 0; 1; 1; 0; 1; 0; 0; 0; 0xFFFF
+0; 1; 2; 3; 6; 7; 8; 9; 0xFFFE; 0; 1; 5; 6; 0xFFFE; 1; 5; 0xFFFE; 0; 1; 2; 3; 4; 7; 8; 9; 0xFFFE; 0; 1; 2; 0xFFFE; 6; 7; 0xFFFE; 3; 0xFFFE; 2; 3; 4; 5; 6; 7; 8; 9; 0xFFFE; 0; 1; 2; 4; 5; 6; 8; 9; 0xFFFE; 2; 3; 6; 7; 8; 9; 0xFFFE; 0xFFFF
+50; 61; 47; 48; 18; 36; 41; 33; 33; 33; 0xFFFF
+# [..#.###..] (0,2,3,6) (1,2,3) (0,1,2,3,5,6,7) (1,2,3,4,6,7,8) (1,3,5,7,8) (0,1,4,5,6,7) (0,1,5,6,7,8) (0,2,3,5,6,8) (1,2,3,5,7,8) (0,1,6,8) {54,197,59,197,17,186,66,186,188}
+0; 0; 1; 0; 1; 1; 1; 0; 0; 0xFFFF
+0; 2; 3; 6; 0xFFFE; 1; 2; 3; 0xFFFE; 0; 1; 2; 3; 5; 6; 7; 0xFFFE; 1; 2; 3; 4; 6; 7; 8; 0xFFFE; 1; 3; 5; 7; 8; 0xFFFE; 0; 1; 4; 5; 6; 7; 0xFFFE; 0; 1; 5; 6; 7; 8; 0xFFFE; 0; 2; 3; 5; 6; 8; 0xFFFE; 1; 2; 3; 5; 7; 8; 0xFFFE; 0; 1; 6; 8; 0xFFFE; 0xFFFF
+54; 197; 59; 197; 17; 186; 66; 186; 188; 0xFFFF
+# [..#######.] (1,2,5,6,7,9) (2,3,4,6,7,8) (4,5,7,9) (3,4,5,8,9) (1,2,5,7,8) (0,1,8) (3,4,5,6,7,8,9) (0,1,2,3,5,6,7,8) (0,1,6) (3,4,9) (0,1,2,3,4,6,7,8,9) {43,237,239,76,77,236,227,253,94,241}
+0; 0; 1; 1; 1; 1; 1; 1; 1; 0; 0xFFFF
+1; 2; 5; 6; 7; 9; 0xFFFE; 2; 3; 4; 6; 7; 8; 0xFFFE; 4; 5; 7; 9; 0xFFFE; 3; 4; 5; 8; 9; 0xFFFE; 1; 2; 5; 7; 8; 0xFFFE; 0; 1; 8; 0xFFFE; 3; 4; 5; 6; 7; 8; 9; 0xFFFE; 0; 1; 2; 3; 5; 6; 7; 8; 0xFFFE; 0; 1; 6; 0xFFFE; 3; 4; 9; 0xFFFE; 0; 1; 2; 3; 4; 6; 7; 8; 9; 0xFFFE; 0xFFFF
+43; 237; 239; 76; 77; 236; 227; 253; 94; 241; 0xFFFF
+# [.#..#.###.] (0,1,2,3,4,5,7,8) (0,4) (0,1,4,5,7,8) (1,6,8) (4,7) (0,2,3,6,8) (0,1,3,4,6,8,9) (1,3,4,6,7,8,9) (2,8) (0,2,3,6) {71,42,36,37,60,23,38,31,58,14}
+0; 1; 0; 0; 1; 0; 1; 1; 1; 0; 0xFFFF
+0; 1; 2; 3; 4; 5; 7; 8; 0xFFFE; 0; 4; 0xFFFE; 0; 1; 4; 5; 7; 8; 0xFFFE; 1; 6; 8; 0xFFFE; 4; 7; 0xFFFE; 0; 2; 3; 6; 8; 0xFFFE; 0; 1; 3; 4; 6; 8; 9; 0xFFFE; 1; 3; 4; 6; 7; 8; 9; 0xFFFE; 2; 8; 0xFFFE; 0; 2; 3; 6; 0xFFFE; 0xFFFF
+71; 42; 36; 37; 60; 23; 38; 31; 58; 14; 0xFFFF
+# [#..##.#..] (2,3,5,8) (0,5,6) (0,3,4,6,7,8) (2,4) (0,1,3,4,5,6,7,8) (7,8) (0,1,2,4,5,6,7,8) (0,1,3,5,6,8) (1,3) {191,71,29,194,173,64,191,175,201}
+1; 0; 0; 1; 1; 0; 1; 0; 0; 0xFFFF
+2; 3; 5; 8; 0xFFFE; 0; 5; 6; 0xFFFE; 0; 3; 4; 6; 7; 8; 0xFFFE; 2; 4; 0xFFFE; 0; 1; 3; 4; 5; 6; 7; 8; 0xFFFE; 7; 8; 0xFFFE; 0; 1; 2; 4; 5; 6; 7; 8; 0xFFFE; 0; 1; 3; 5; 6; 8; 0xFFFE; 1; 3; 0xFFFE; 0xFFFF
+191; 71; 29; 194; 173; 64; 191; 175; 201; 0xFFFF
+# [...###] (2,5) (0,1) (1,2,4) (0,3) (0,1,2,3,4) (0,1,2,4) {33,47,53,19,45,8}
+0; 0; 0; 1; 1; 1; 0xFFFF
+2; 5; 0xFFFE; 0; 1; 0xFFFE; 1; 2; 4; 0xFFFE; 0; 3; 0xFFFE; 0; 1; 2; 3; 4; 0xFFFE; 0; 1; 2; 4; 0xFFFE; 0xFFFF
+33; 47; 53; 19; 45; 8; 0xFFFF
+# [#..##.] (0,2,4,5) (0,1,3,4,5) (2,3,5) (1,2,3) (1,2,3,4) {17,35,53,42,33,24}
+1; 0; 0; 1; 1; 0; 0xFFFF
+0; 2; 4; 5; 0xFFFE; 0; 1; 3; 4; 5; 0xFFFE; 2; 3; 5; 0xFFFE; 1; 2; 3; 0xFFFE; 1; 2; 3; 4; 0xFFFE; 0xFFFF
+17; 35; 53; 42; 33; 24; 0xFFFF
+# [...##] (0,2) (0,1,2,3) (0,1,2,4) {29,22,29,17,5}
+0; 0; 0; 1; 1; 0xFFFF
+0; 2; 0xFFFE; 0; 1; 2; 3; 0xFFFE; 0; 1; 2; 4; 0xFFFE; 0xFFFF
+29; 22; 29; 17; 5; 0xFFFF
+# [..###] (1,4) (0,1,2,4) (0,2,3,4) (0,4) (1,3,4) {9,15,6,13,23}
+0; 0; 1; 1; 1; 0xFFFF
+1; 4; 0xFFFE; 0; 1; 2; 4; 0xFFFE; 0; 2; 3; 4; 0xFFFE; 0; 4; 0xFFFE; 1; 3; 4; 0xFFFE; 0xFFFF
+9; 15; 6; 13; 23; 0xFFFF
+# [#.#...] (1,2,3,4) (1,5) (0,1,3,4) (1,2) (0,1,4) (2,3,5) {1,34,30,15,13,9}
+1; 0; 1; 0; 0; 0; 0xFFFF
+1; 2; 3; 4; 0xFFFE; 1; 5; 0xFFFE; 0; 1; 3; 4; 0xFFFE; 1; 2; 0xFFFE; 0; 1; 4; 0xFFFE; 2; 3; 5; 0xFFFE; 0xFFFF
+1; 34; 30; 15; 13; 9; 0xFFFF
+# [.##.#.] (2,5) (0,4,5) (1,3) (0,1,4,5) (0,1,2,5) {32,33,28,14,18,46}
+0; 1; 1; 0; 1; 0; 0xFFFF
+2; 5; 0xFFFE; 0; 4; 5; 0xFFFE; 1; 3; 0xFFFE; 0; 1; 4; 5; 0xFFFE; 0; 1; 2; 5; 0xFFFE; 0xFFFF
+32; 33; 28; 14; 18; 46; 0xFFFF
+# [.###..##] (0,1,2,5) (1,2,5,7) (0,1,4,5,6) (0,1,3,6) (0,1,2,3,4,5) (1,3,5) (1,2,4,5) (0,2,6) {41,77,77,19,35,77,13,19}
+0; 1; 1; 1; 0; 0; 1; 1; 0xFFFF
+0; 1; 2; 5; 0xFFFE; 1; 2; 5; 7; 0xFFFE; 0; 1; 4; 5; 6; 0xFFFE; 0; 1; 3; 6; 0xFFFE; 0; 1; 2; 3; 4; 5; 0xFFFE; 1; 3; 5; 0xFFFE; 1; 2; 4; 5; 0xFFFE; 0; 2; 6; 0xFFFE; 0xFFFF
+41; 77; 77; 19; 35; 77; 13; 19; 0xFFFF
+# [.##...#.] (3,5,7) (0,1,3,4,6) (0,7) (1,2,3,5,6,7) (0,1,3,4,6,7) (0,2) (1,5) (0,2,3,5,6) (4,6) {61,49,44,72,45,59,75,41}
+0; 1; 1; 0; 0; 0; 1; 0; 0xFFFF
+3; 5; 7; 0xFFFE; 0; 1; 3; 4; 6; 0xFFFE; 0; 7; 0xFFFE; 1; 2; 3; 5; 6; 7; 0xFFFE; 0; 1; 3; 4; 6; 7; 0xFFFE; 0; 2; 0xFFFE; 1; 5; 0xFFFE; 0; 2; 3; 5; 6; 0xFFFE; 4; 6; 0xFFFE; 0xFFFF
+61; 49; 44; 72; 45; 59; 75; 41; 0xFFFF
+# [#...] (0) (0,2,3) (1,3) (0,1) (0,1,2) (3) {52,45,17,29}
+1; 0; 0; 0; 0xFFFF
+0; 0xFFFE; 0; 2; 3; 0xFFFE; 1; 3; 0xFFFE; 0; 1; 0xFFFE; 0; 1; 2; 0xFFFE; 3; 0xFFFE; 0xFFFF
+52; 45; 17; 29; 0xFFFF
+# [.##.#] (1,2,3) (0,4) (3,4) (2,3) {1,0,7,18,12}
+0; 1; 1; 0; 1; 0xFFFF
+1; 2; 3; 0xFFFE; 0; 4; 0xFFFE; 3; 4; 0xFFFE; 2; 3; 0xFFFE; 0xFFFF
+1; 0; 7; 18; 12; 0xFFFF
+# [.#...##.#] (3,5,7) (2,5,6) (0,7) (0,1,5,6,7,8) (3,5,6) (4,5,7) (2,3,4,6,7) {30,17,25,35,19,54,50,62,17}
+0; 1; 0; 0; 0; 1; 1; 0; 1; 0xFFFF
+3; 5; 7; 0xFFFE; 2; 5; 6; 0xFFFE; 0; 7; 0xFFFE; 0; 1; 5; 6; 7; 8; 0xFFFE; 3; 5; 6; 0xFFFE; 4; 5; 7; 0xFFFE; 2; 3; 4; 6; 7; 0xFFFE; 0xFFFF
+30; 17; 25; 35; 19; 54; 50; 62; 17; 0xFFFF
+# [#...#....] (0,4) (1,3,5,6,7) (1,4,7,8) (1,3,4,5,6,8) (0,1,3,7,8) (0,3,7) (0,2,3,5,6,8) {33,22,12,36,10,25,25,24,21}
+1; 0; 0; 0; 1; 0; 0; 0; 0; 0xFFFF
+0; 4; 0xFFFE; 1; 3; 5; 6; 7; 0xFFFE; 1; 4; 7; 8; 0xFFFE; 1; 3; 4; 5; 6; 8; 0xFFFE; 0; 1; 3; 7; 8; 0xFFFE; 0; 3; 7; 0xFFFE; 0; 2; 3; 5; 6; 8; 0xFFFE; 0xFFFF
+33; 22; 12; 36; 10; 25; 25; 24; 21; 0xFFFF
+# [#.#.##.] (1,3,5,6) (0,1,2,3,4) (0,1,3,4) (0,4,5) (0,2,3,4,5,6) {63,45,37,62,63,52,34}
+1; 0; 1; 0; 1; 1; 0; 0xFFFF
+1; 3; 5; 6; 0xFFFE; 0; 1; 2; 3; 4; 0xFFFE; 0; 1; 3; 4; 0xFFFE; 0; 4; 5; 0xFFFE; 0; 2; 3; 4; 5; 6; 0xFFFE; 0xFFFF
+63; 45; 37; 62; 63; 52; 34; 0xFFFF
+# [.#.....#..] (0,1,3,4,7,8,9) (0,1,3,5,7,8) (6,7,8) (0,1,2,3,4,6,7,8) (0,1,2,4,5,6,9) (0,1,2,3,5,6,7,8,9) (0,4,5,7) (0,1,2,4,5,7,8,9) (0,1,4) {75,59,34,37,49,52,40,63,47,35}
+0; 1; 0; 0; 0; 0; 0; 1; 0; 0; 0xFFFF
+0; 1; 3; 4; 7; 8; 9; 0xFFFE; 0; 1; 3; 5; 7; 8; 0xFFFE; 6; 7; 8; 0xFFFE; 0; 1; 2; 3; 4; 6; 7; 8; 0xFFFE; 0; 1; 2; 4; 5; 6; 9; 0xFFFE; 0; 1; 2; 3; 5; 6; 7; 8; 9; 0xFFFE; 0; 4; 5; 7; 0xFFFE; 0; 1; 2; 4; 5; 7; 8; 9; 0xFFFE; 0; 1; 4; 0xFFFE; 0xFFFF
+75; 59; 34; 37; 49; 52; 40; 63; 47; 35; 0xFFFF
+# [###.#] (0,2) (1,4) (0,3,4) {10,2,1,9,11}
+1; 1; 1; 0; 1; 0xFFFF
+0; 2; 0xFFFE; 1; 4; 0xFFFE; 0; 3; 4; 0xFFFE; 0xFFFF
+10; 2; 1; 9; 11; 0xFFFF
+# [...##] (0,1,2) (0,2,4) (1,2,4) (1,3,4) (0,1,4) (0,3,4) {33,40,22,26,44}
+0; 0; 0; 1; 1; 0xFFFF
+0; 1; 2; 0xFFFE; 0; 2; 4; 0xFFFE; 1; 2; 4; 0xFFFE; 1; 3; 4; 0xFFFE; 0; 1; 4; 0xFFFE; 0; 3; 4; 0xFFFE; 0xFFFF
+33; 40; 22; 26; 44; 0xFFFF
+# [..##] (2) (0,1,3) (0,2) (1,3) (0,2,3) {40,30,148,46}
+0; 0; 1; 1; 0xFFFF
+2; 0xFFFE; 0; 1; 3; 0xFFFE; 0; 2; 0xFFFE; 1; 3; 0xFFFE; 0; 2; 3; 0xFFFE; 0xFFFF
+40; 30; 148; 46; 0xFFFF
+# [#.#.] (0,2,3) (0,2) (0,1,3) {30,12,18,21}
+1; 0; 1; 0; 0xFFFF
+0; 2; 3; 0xFFFE; 0; 2; 0xFFFE; 0; 1; 3; 0xFFFE; 0xFFFF
+30; 12; 18; 21; 0xFFFF
+# [..#...] (1,2,4,5) (0,2) (0,3,4) (0,1,2,3,5) (2,4,5) (1,3) (0,1) {57,55,62,49,48,49}
+0; 0; 1; 0; 0; 0; 0xFFFF
+1; 2; 4; 5; 0xFFFE; 0; 2; 0xFFFE; 0; 3; 4; 0xFFFE; 0; 1; 2; 3; 5; 0xFFFE; 2; 4; 5; 0xFFFE; 1; 3; 0xFFFE; 0; 1; 0xFFFE; 0xFFFF
+57; 55; 62; 49; 48; 49; 0xFFFF
+# [##...##..] (0,1,6,8) (1,2,3,4,7,8) (2,4,6) (2,3,5) (1,2,3,4,6,8) (0,1,5,7) (0,1,3,4,5,6,8) (0,2,3,5,8) (0,2,3,4,6,7) {34,138,180,162,148,44,148,12,150}
+1; 1; 0; 0; 0; 1; 1; 0; 0; 0xFFFF
+0; 1; 6; 8; 0xFFFE; 1; 2; 3; 4; 7; 8; 0xFFFE; 2; 4; 6; 0xFFFE; 2; 3; 5; 0xFFFE; 1; 2; 3; 4; 6; 8; 0xFFFE; 0; 1; 5; 7; 0xFFFE; 0; 1; 3; 4; 5; 6; 8; 0xFFFE; 0; 2; 3; 5; 8; 0xFFFE; 0; 2; 3; 4; 6; 7; 0xFFFE; 0xFFFF
+34; 138; 180; 162; 148; 44; 148; 12; 150; 0xFFFF
+# [##..] (0,1) (1) (0,2,3) (1,2) (0,1,3) (1,2,3) {24,45,30,38}
+1; 1; 0; 0; 0xFFFF
+0; 1; 0xFFFE; 1; 0xFFFE; 0; 2; 3; 0xFFFE; 1; 2; 0xFFFE; 0; 1; 3; 0xFFFE; 1; 2; 3; 0xFFFE; 0xFFFF
+24; 45; 30; 38; 0xFFFF
+# [##..] (2,3) (1,2) (1,2,3) (0) {7,147,167,27}
+1; 1; 0; 0; 0xFFFF
+2; 3; 0xFFFE; 1; 2; 0xFFFE; 1; 2; 3; 0xFFFE; 0; 0xFFFE; 0xFFFF
+7; 147; 167; 27; 0xFFFF
+# [.#.###..##] (1,3,9) (0,6,7,9) (1,2,3,5,8,9) (1,2,3,4,6,7,8,9) (1,2,4,7) (0,1,2,3,4,9) (0,3,6,8,9) (4,5,7,9) {30,76,58,56,55,11,27,51,21,73}
+0; 1; 0; 1; 1; 1; 0; 0; 1; 1; 0xFFFF
+1; 3; 9; 0xFFFE; 0; 6; 7; 9; 0xFFFE; 1; 2; 3; 5; 8; 9; 0xFFFE; 1; 2; 3; 4; 6; 7; 8; 9; 0xFFFE; 1; 2; 4; 7; 0xFFFE; 0; 1; 2; 3; 4; 9; 0xFFFE; 0; 3; 6; 8; 9; 0xFFFE; 4; 5; 7; 9; 0xFFFE; 0xFFFF
+30; 76; 58; 56; 55; 11; 27; 51; 21; 73; 0xFFFF
+# [....#.##.] (0,1,5,7,8) (0,1,4,6) (0,1,3,4,7) (0,1,2) (1,3,8) (0,5) (0,1,2,4,5,7) (2,3,4,5) (4,5) (0,2,3,5,6,7,8) (0,1,2,3,4,5,6) {79,83,40,53,60,67,22,60,38}
+0; 0; 0; 0; 1; 0; 1; 1; 0; 0xFFFF
+0; 1; 5; 7; 8; 0xFFFE; 0; 1; 4; 6; 0xFFFE; 0; 1; 3; 4; 7; 0xFFFE; 0; 1; 2; 0xFFFE; 1; 3; 8; 0xFFFE; 0; 5; 0xFFFE; 0; 1; 2; 4; 5; 7; 0xFFFE; 2; 3; 4; 5; 0xFFFE; 4; 5; 0xFFFE; 0; 2; 3; 5; 6; 7; 8; 0xFFFE; 0; 1; 2; 3; 4; 5; 6; 0xFFFE; 0xFFFF
+79; 83; 40; 53; 60; 67; 22; 60; 38; 0xFFFF
+# [......#] (0,1,3,4,6) (2,6) (6) (2) (1,2,4,5,6) (0,2,3,4,6) (1,2,3,6) (2,4,5) (0,1,2,3,5,6) {39,36,81,39,43,36,66}
+0; 0; 0; 0; 0; 0; 1; 0xFFFF
+0; 1; 3; 4; 6; 0xFFFE; 2; 6; 0xFFFE; 6; 0xFFFE; 2; 0xFFFE; 1; 2; 4; 5; 6; 0xFFFE; 0; 2; 3; 4; 6; 0xFFFE; 1; 2; 3; 6; 0xFFFE; 2; 4; 5; 0xFFFE; 0; 1; 2; 3; 5; 6; 0xFFFE; 0xFFFF
+39; 36; 81; 39; 43; 36; 66; 0xFFFF
+# [##.##..] (6) (2,3,6) (1,3,4,5) (3,4,6) (2,4,5) (0,3,4,5,6) (0,1,2) {10,12,22,43,30,24,45}
+1; 1; 0; 1; 1; 0; 0; 0xFFFF
+6; 0xFFFE; 2; 3; 6; 0xFFFE; 1; 3; 4; 5; 0xFFFE; 3; 4; 6; 0xFFFE; 2; 4; 5; 0xFFFE; 0; 3; 4; 5; 6; 0xFFFE; 0; 1; 2; 0xFFFE; 0xFFFF
+10; 12; 22; 43; 30; 24; 45; 0xFFFF
+# [.#.#..##] (1,3,4,5,6) (1,2,3,5,6,7) (0,4,6,7) (0,2,3,4,7) (1,4,6) (0,1,3,6,7) (2,3,5,6,7) (1,3,4,5) (0,3,4,5,6,7) (0,1,2,3,5,6) {53,204,179,230,70,214,230,217}
+0; 1; 0; 1; 0; 0; 1; 1; 0xFFFF
+1; 3; 4; 5; 6; 0xFFFE; 1; 2; 3; 5; 6; 7; 0xFFFE; 0; 4; 6; 7; 0xFFFE; 0; 2; 3; 4; 7; 0xFFFE; 1; 4; 6; 0xFFFE; 0; 1; 3; 6; 7; 0xFFFE; 2; 3; 5; 6; 7; 0xFFFE; 1; 3; 4; 5; 0xFFFE; 0; 3; 4; 5; 6; 7; 0xFFFE; 0; 1; 2; 3; 5; 6; 0xFFFE; 0xFFFF
+53; 204; 179; 230; 70; 214; 230; 217; 0xFFFF
+# [.#.#.#] (1,4,5) (1,2,3,4,5) (0,1,3,4) (0,2,3,4,5) (0,3,5) {44,30,33,59,48,44}
+0; 1; 0; 1; 0; 1; 0xFFFF
+1; 4; 5; 0xFFFE; 1; 2; 3; 4; 5; 0xFFFE; 0; 1; 3; 4; 0xFFFE; 0; 2; 3; 4; 5; 0xFFFE; 0; 3; 5; 0xFFFE; 0xFFFF
+44; 30; 33; 59; 48; 44; 0xFFFF
+# [#####.] (3,5) (0,1,2,5) (0,5) (2,4) (2,3,5) {22,8,22,7,14,29}
+1; 1; 1; 1; 1; 0; 0xFFFF
+3; 5; 0xFFFE; 0; 1; 2; 5; 0xFFFE; 0; 5; 0xFFFE; 2; 4; 0xFFFE; 2; 3; 5; 0xFFFE; 0xFFFF
+22; 8; 22; 7; 14; 29; 0xFFFF
+# [..#.....##] (0,1,3,4,5,8) (0,1,3,4,6,8) (0,3,6,9) (0,1,2,3,4,6,9) (0,2,3,7,8) (1,2,3,4,6,7) (2,9) (0,5,8,9) (0,2,3,7,9) (0,5) {63,30,40,43,30,34,24,7,29,59}
+0; 0; 1; 0; 0; 0; 0; 0; 1; 1; 0xFFFF
+0; 1; 3; 4; 5; 8; 0xFFFE; 0; 1; 3; 4; 6; 8; 0xFFFE; 0; 3; 6; 9; 0xFFFE; 0; 1; 2; 3; 4; 6; 9; 0xFFFE; 0; 2; 3; 7; 8; 0xFFFE; 1; 2; 3; 4; 6; 7; 0xFFFE; 2; 9; 0xFFFE; 0; 5; 8; 9; 0xFFFE; 0; 2; 3; 7; 9; 0xFFFE; 0; 5; 0xFFFE; 0xFFFF
+63; 30; 40; 43; 30; 34; 24; 7; 29; 59; 0xFFFF
+# [##..] (1,2) (0,2,3) (0) (1,3) (2,3) (0,1) {34,36,54,40}
+1; 1; 0; 0; 0xFFFF
+1; 2; 0xFFFE; 0; 2; 3; 0xFFFE; 0; 0xFFFE; 1; 3; 0xFFFE; 2; 3; 0xFFFE; 0; 1; 0xFFFE; 0xFFFF
+34; 36; 54; 40; 0xFFFF
+# [.#.#.] (1,2) (0,1,2,4) (1,2,4) (1,3) {6,201,200,1,9}
+0; 1; 0; 1; 0; 0xFFFF
+1; 2; 0xFFFE; 0; 1; 2; 4; 0xFFFE; 1; 2; 4; 0xFFFE; 1; 3; 0xFFFE; 0xFFFF
+6; 201; 200; 1; 9; 0xFFFF
+# [.##.#..] (0,1,5) (0,2,4,5) (1,2,4) (0,2,3,4,5) (0,3,4,6) (1,5) (1,2,3,6) (2,3,4,5) (0,1,2,4,6) {49,61,71,23,72,54,27}
+0; 1; 1; 0; 1; 0; 0; 0xFFFF
+0; 1; 5; 0xFFFE; 0; 2; 4; 5; 0xFFFE; 1; 2; 4; 0xFFFE; 0; 2; 3; 4; 5; 0xFFFE; 0; 3; 4; 6; 0xFFFE; 1; 5; 0xFFFE; 1; 2; 3; 6; 0xFFFE; 2; 3; 4; 5; 0xFFFE; 0; 1; 2; 4; 6; 0xFFFE; 0xFFFF
+49; 61; 71; 23; 72; 54; 27; 0xFFFF
+# [#..#.#..##] (2,4) (5,6) (0,1,3,6,7,8) (0,2,4,5,8,9) (1,2,3,7) (0,1,5,6,7,8,9) (1,2,3) (0,3) (3,4,5,8,9) (0,1,4,6,7,8) {58,50,31,31,44,30,59,46,53,14}
+1; 0; 0; 1; 0; 1; 0; 0; 1; 1; 0xFFFF
+2; 4; 0xFFFE; 5; 6; 0xFFFE; 0; 1; 3; 6; 7; 8; 0xFFFE; 0; 2; 4; 5; 8; 9; 0xFFFE; 1; 2; 3; 7; 0xFFFE; 0; 1; 5; 6; 7; 8; 9; 0xFFFE; 1; 2; 3; 0xFFFE; 0; 3; 0xFFFE; 3; 4; 5; 8; 9; 0xFFFE; 0; 1; 4; 6; 7; 8; 0xFFFE; 0xFFFF
+58; 50; 31; 31; 44; 30; 59; 46; 53; 14; 0xFFFF
+# [....#.#] (1,5,6) (0,2,3,6) (5,6) (1,3,4,5,6) (0,1,2) (4,6) {24,34,24,28,18,39,49}
+0; 0; 0; 0; 1; 0; 1; 0xFFFF
+1; 5; 6; 0xFFFE; 0; 2; 3; 6; 0xFFFE; 5; 6; 0xFFFE; 1; 3; 4; 5; 6; 0xFFFE; 0; 1; 2; 0xFFFE; 4; 6; 0xFFFE; 0xFFFF
+24; 34; 24; 28; 18; 39; 49; 0xFFFF
+# [....##] (4,5) (0,1,3,4) (0,1,2) (1,4) (0,2,5) (2,4) (2,3,4) (1,2,4) {38,50,65,30,73,16}
+0; 0; 0; 0; 1; 1; 0xFFFF
+4; 5; 0xFFFE; 0; 1; 3; 4; 0xFFFE; 0; 1; 2; 0xFFFE; 1; 4; 0xFFFE; 0; 2; 5; 0xFFFE; 2; 4; 0xFFFE; 2; 3; 4; 0xFFFE; 1; 2; 4; 0xFFFE; 0xFFFF
+38; 50; 65; 30; 73; 16; 0xFFFF
+# [.#.#..#.] (0,3,6,7) (3,5,6) (4,5) (0,2,3,6) (0,1,4,5,6) (1,5) (0,1,2,5,6,7) {32,29,17,33,4,46,46,26}
+0; 1; 0; 1; 0; 0; 1; 0; 0xFFFF
+0; 3; 6; 7; 0xFFFE; 3; 5; 6; 0xFFFE; 4; 5; 0xFFFE; 0; 2; 3; 6; 0xFFFE; 0; 1; 4; 5; 6; 0xFFFE; 1; 5; 0xFFFE; 0; 1; 2; 5; 6; 7; 0xFFFE; 0xFFFF
+32; 29; 17; 33; 4; 46; 46; 26; 0xFFFF
+# [...#..###.] (0,3,7,8,9) (3,5,6,7,8) (0,1,6,7,8,9) (2,5,9) (0,1,2,3,5,6,7,9) (1,4,6,8) (0,1,2,7,8,9) (1,4,8,9) (3,4,9) (0,2,3,4,5,7) (0,1,2,3,4,7,8,9) {38,46,50,52,42,42,20,57,72,79}
+0; 0; 0; 1; 0; 0; 1; 1; 1; 0; 0xFFFF
+0; 3; 7; 8; 9; 0xFFFE; 3; 5; 6; 7; 8; 0xFFFE; 0; 1; 6; 7; 8; 9; 0xFFFE; 2; 5; 9; 0xFFFE; 0; 1; 2; 3; 5; 6; 7; 9; 0xFFFE; 1; 4; 6; 8; 0xFFFE; 0; 1; 2; 7; 8; 9; 0xFFFE; 1; 4; 8; 9; 0xFFFE; 3; 4; 9; 0xFFFE; 0; 2; 3; 4; 5; 7; 0xFFFE; 0; 1; 2; 3; 4; 7; 8; 9; 0xFFFE; 0xFFFF
+38; 46; 50; 52; 42; 42; 20; 57; 72; 79; 0xFFFF
+# [###...##..] (0,3,4,6,7,8,9) (3,4,5) (0,1,2,3,5,6,7) (5,7,8) (0,2,3,6,9) (0,1,2,3,5,6,7,8,9) (1,3,4,5,6,7,8,9) (0,1,3,4,5,6,7,8,9) (4) {141,125,111,164,70,158,149,162,56,43}
+1; 1; 1; 0; 0; 0; 1; 1; 0; 0; 0xFFFF
+0; 3; 4; 6; 7; 8; 9; 0xFFFE; 3; 4; 5; 0xFFFE; 0; 1; 2; 3; 5; 6; 7; 0xFFFE; 5; 7; 8; 0xFFFE; 0; 2; 3; 6; 9; 0xFFFE; 0; 1; 2; 3; 5; 6; 7; 8; 9; 0xFFFE; 1; 3; 4; 5; 6; 7; 8; 9; 0xFFFE; 0; 1; 3; 4; 5; 6; 7; 8; 9; 0xFFFE; 4; 0xFFFE; 0xFFFF
+141; 125; 111; 164; 70; 158; 149; 162; 56; 43; 0xFFFF
+# [#...#.#.] (0,1,6) (0,1,2,3,5,7) (0,1,4,7) (1,2,3,4,5) (2,3,4,5,6,7) (1,2,3,4,5,6) {32,57,45,45,46,45,29,30}
+1; 0; 0; 0; 1; 0; 1; 0; 0xFFFF
+0; 1; 6; 0xFFFE; 0; 1; 2; 3; 5; 7; 0xFFFE; 0; 1; 4; 7; 0xFFFE; 1; 2; 3; 4; 5; 0xFFFE; 2; 3; 4; 5; 6; 7; 0xFFFE; 1; 2; 3; 4; 5; 6; 0xFFFE; 0xFFFF
+32; 57; 45; 45; 46; 45; 29; 30; 0xFFFF
+# [#..##.##] (0,1,3,6,7) (0,2,4,7) (1,2,3,4,5,7) (0,3,5,6,7) (0,2,3,4,7) (0,1,2,4,5,6) (2,5,6,7) (0,1,6) {82,67,61,67,61,46,57,73}
+1; 0; 0; 1; 1; 0; 1; 1; 0xFFFF
+0; 1; 3; 6; 7; 0xFFFE; 0; 2; 4; 7; 0xFFFE; 1; 2; 3; 4; 5; 7; 0xFFFE; 0; 3; 5; 6; 7; 0xFFFE; 0; 2; 3; 4; 7; 0xFFFE; 0; 1; 2; 4; 5; 6; 0xFFFE; 2; 5; 6; 7; 0xFFFE; 0; 1; 6; 0xFFFE; 0xFFFF
+82; 67; 61; 67; 61; 46; 57; 73; 0xFFFF
+# [.##.#.##.#] (1,2,4,6,7) (1,8) (0,1,2,7) (0,1,2,3,4,7,8) (0,1,3,4,6,9) (1,2,3) (0,5) (0,3,4,7) (1,2,4,6,7,9) {33,69,55,25,36,1,27,49,13,24}
+0; 1; 1; 0; 1; 0; 1; 1; 0; 1; 0xFFFF
+1; 2; 4; 6; 7; 0xFFFE; 1; 8; 0xFFFE; 0; 1; 2; 7; 0xFFFE; 0; 1; 2; 3; 4; 7; 8; 0xFFFE; 0; 1; 3; 4; 6; 9; 0xFFFE; 1; 2; 3; 0xFFFE; 0; 5; 0xFFFE; 0; 3; 4; 7; 0xFFFE; 1; 2; 4; 6; 7; 9; 0xFFFE; 0xFFFF
+33; 69; 55; 25; 36; 1; 27; 49; 13; 24; 0xFFFF
+# [##..#.#] (0,1,3,4,6) (0,1,3,4) (1,2,5,6) (0,2,4,5) (0,1,2) {53,56,36,30,40,23,27}
+1; 1; 0; 0; 1; 0; 1; 0xFFFF
+0; 1; 3; 4; 6; 0xFFFE; 0; 1; 3; 4; 0xFFFE; 1; 2; 5; 6; 0xFFFE; 0; 2; 4; 5; 0xFFFE; 0; 1; 2; 0xFFFE; 0xFFFF
+53; 56; 36; 30; 40; 23; 27; 0xFFFF
+# [###.....] (0,2,3,4,6) (0,2,3,4,5,6) (0,1,5,7) (1,2,3,4,7) (2,3,4,5) (0,2,3) (0,1,2,4) {75,176,223,205,212,44,34,158}
+1; 1; 1; 0; 0; 0; 0; 0; 0xFFFF
+0; 2; 3; 4; 6; 0xFFFE; 0; 2; 3; 4; 5; 6; 0xFFFE; 0; 1; 5; 7; 0xFFFE; 1; 2; 3; 4; 7; 0xFFFE; 2; 3; 4; 5; 0xFFFE; 0; 2; 3; 0xFFFE; 0; 1; 2; 4; 0xFFFE; 0xFFFF
+75; 176; 223; 205; 212; 44; 34; 158; 0xFFFF
+# [..##.#####] (0,6,8) (2,4,6) (0,1,2,3,6,7,8) (1,4,7,8) (1,2,4,6) (3,5) (6,7) (3,5,9) (0,2,4,7,9) {40,38,40,20,43,7,60,43,49,7}
+0; 0; 1; 1; 0; 1; 1; 1; 1; 1; 0xFFFF
+0; 6; 8; 0xFFFE; 2; 4; 6; 0xFFFE; 0; 1; 2; 3; 6; 7; 8; 0xFFFE; 1; 4; 7; 8; 0xFFFE; 1; 2; 4; 6; 0xFFFE; 3; 5; 0xFFFE; 6; 7; 0xFFFE; 3; 5; 9; 0xFFFE; 0; 2; 4; 7; 9; 0xFFFE; 0xFFFF
+40; 38; 40; 20; 43; 7; 60; 43; 49; 7; 0xFFFF
+# [###..] (0,2,3) (2,3,4) (0,3,4) (0,1,2,4) (0,1,4) {141,107,124,36,123}
+1; 1; 1; 0; 0; 0xFFFF
+0; 2; 3; 0xFFFE; 2; 3; 4; 0xFFFE; 0; 3; 4; 0xFFFE; 0; 1; 2; 4; 0xFFFE; 0; 1; 4; 0xFFFE; 0xFFFF
+141; 107; 124; 36; 123; 0xFFFF
+# [.#.##] (2,3,4) (0,3,4) (0,1) (0,2) {216,186,30,28,28}
+0; 1; 0; 1; 1; 0xFFFF
+2; 3; 4; 0xFFFE; 0; 3; 4; 0xFFFE; 0; 1; 0xFFFE; 0; 2; 0xFFFE; 0xFFFF
+216; 186; 30; 28; 28; 0xFFFF
+# [.###..#] (0,2,5) (0,1,5) (2,3,5,6) (0,2,4) (1,3) (1,2,5,6) (3,4,5,6) (1,2,3,6) {41,39,48,32,13,50,30}
+0; 1; 1; 1; 0; 0; 1; 0xFFFF
+0; 2; 5; 0xFFFE; 0; 1; 5; 0xFFFE; 2; 3; 5; 6; 0xFFFE; 0; 2; 4; 0xFFFE; 1; 3; 0xFFFE; 1; 2; 5; 6; 0xFFFE; 3; 4; 5; 6; 0xFFFE; 1; 2; 3; 6; 0xFFFE; 0xFFFF
+41; 39; 48; 32; 13; 50; 30; 0xFFFF
+# [##..] (3) (0,3) (0) (0,1) (1,2) (2) {32,26,19,29}
+1; 1; 0; 0; 0xFFFF
+3; 0xFFFE; 0; 3; 0xFFFE; 0; 0xFFFE; 0; 1; 0xFFFE; 1; 2; 0xFFFE; 2; 0xFFFE; 0xFFFF
+32; 26; 19; 29; 0xFFFF
+# [###.#.###] (0,4,5,6,7,8) (0,1,2,3,4,6,7) (1,2,5,8) (1,2,6) (0,1,2) (0,4,6,8) (1,2,4,5,7,8) (1,3) (7,8) (1,3,4,5,6,7) (2,5,6,7,8) {169,73,55,44,177,172,210,198,184}
+1; 1; 1; 0; 1; 0; 1; 1; 1; 0xFFFF
+0; 4; 5; 6; 7; 8; 0xFFFE; 0; 1; 2; 3; 4; 6; 7; 0xFFFE; 1; 2; 5; 8; 0xFFFE; 1; 2; 6; 0xFFFE; 0; 1; 2; 0xFFFE; 0; 4; 6; 8; 0xFFFE; 1; 2; 4; 5; 7; 8; 0xFFFE; 1; 3; 0xFFFE; 7; 8; 0xFFFE; 1; 3; 4; 5; 6; 7; 0xFFFE; 2; 5; 6; 7; 8; 0xFFFE; 0xFFFF
+169; 73; 55; 44; 177; 172; 210; 198; 184; 0xFFFF
+# [#..####.] (0,1,2,6,7) (0,1,2,3,4,7) (1,2,5,6,7) (0,1,2,5,6,7) (0,1,4,6,7) (0,1,2,3,5) (3,4,6) (0,2,4) (2,3,4,6) {54,44,62,46,58,17,36,37}
+1; 0; 0; 1; 1; 1; 1; 0; 0xFFFF
+0; 1; 2; 6; 7; 0xFFFE; 0; 1; 2; 3; 4; 7; 0xFFFE; 1; 2; 5; 6; 7; 0xFFFE; 0; 1; 2; 5; 6; 7; 0xFFFE; 0; 1; 4; 6; 7; 0xFFFE; 0; 1; 2; 3; 5; 0xFFFE; 3; 4; 6; 0xFFFE; 0; 2; 4; 0xFFFE; 2; 3; 4; 6; 0xFFFE; 0xFFFF
+54; 44; 62; 46; 58; 17; 36; 37; 0xFFFF
+# [#.....###] (0,2,3,5,6,7,8) (0,3,4,5,7,8) (1,4) (0,1,2,5) (0,1,3) (4,7) (0,2,3,5,7,8) (0,1,3,6,8) {69,38,49,49,23,52,18,51,40}
+1; 0; 0; 0; 0; 0; 1; 1; 1; 0xFFFF
+0; 2; 3; 5; 6; 7; 8; 0xFFFE; 0; 3; 4; 5; 7; 8; 0xFFFE; 1; 4; 0xFFFE; 0; 1; 2; 5; 0xFFFE; 0; 1; 3; 0xFFFE; 4; 7; 0xFFFE; 0; 2; 3; 5; 7; 8; 0xFFFE; 0; 1; 3; 6; 8; 0xFFFE; 0xFFFF
+69; 38; 49; 49; 23; 52; 18; 51; 40; 0xFFFF
+# [###.] (0,3) (0,1,3) (1,2) (0,1,2) {37,26,10,27}
+1; 1; 1; 0; 0xFFFF
+0; 3; 0xFFFE; 0; 1; 3; 0xFFFE; 1; 2; 0xFFFE; 0; 1; 2; 0xFFFE; 0xFFFF
+37; 26; 10; 27; 0xFFFF
+# [.##.#..] (0,1,3,4,5) (1,2,3,4,5,6) (2,3,4) (4,5) (0,1,3,5) (0,1,2,3,4,5) (0,2,3) (0,1,2,3,6) {180,189,204,213,40,30,175}
+0; 1; 1; 0; 1; 0; 0; 0xFFFF
+0; 1; 3; 4; 5; 0xFFFE; 1; 2; 3; 4; 5; 6; 0xFFFE; 2; 3; 4; 0xFFFE; 4; 5; 0xFFFE; 0; 1; 3; 5; 0xFFFE; 0; 1; 2; 3; 4; 5; 0xFFFE; 0; 2; 3; 0xFFFE; 0; 1; 2; 3; 6; 0xFFFE; 0xFFFF
+180; 189; 204; 213; 40; 30; 175; 0xFFFF
+# [..##] (1,3) (2,3) (0,2,3) {0,12,10,22}
+0; 0; 1; 1; 0xFFFF
+1; 3; 0xFFFE; 2; 3; 0xFFFE; 0; 2; 3; 0xFFFE; 0xFFFF
+0; 12; 10; 22; 0xFFFF
+# [##..] (3) (1,3) (2) (2,3) (0,1) (0,1,2) {19,22,145,28}
+1; 1; 0; 0; 0xFFFF
+3; 0xFFFE; 1; 3; 0xFFFE; 2; 0xFFFE; 2; 3; 0xFFFE; 0; 1; 0xFFFE; 0; 1; 2; 0xFFFE; 0xFFFF
+19; 22; 145; 28; 0xFFFF
+# [.#.#..##..] (0,1,2,3,4,5,6,9) (0,2,6,8) (1,2,3,5,8,9) (0,1,3,4,5,6,8,9) (0,3,4,5,6,8) (2,4,6,8) (2,5,7) (0,2,3,4,5,6,9) {51,37,38,47,45,50,56,3,51,39}
+0; 1; 0; 1; 0; 0; 1; 1; 0; 0; 0xFFFF
+0; 1; 2; 3; 4; 5; 6; 9; 0xFFFE; 0; 2; 6; 8; 0xFFFE; 1; 2; 3; 5; 8; 9; 0xFFFE; 0; 1; 3; 4; 5; 6; 8; 9; 0xFFFE; 0; 3; 4; 5; 6; 8; 0xFFFE; 2; 4; 6; 8; 0xFFFE; 2; 5; 7; 0xFFFE; 0; 2; 3; 4; 5; 6; 9; 0xFFFE; 0xFFFF
+51; 37; 38; 47; 45; 50; 56; 3; 51; 39; 0xFFFF
+# [.....#] (0,1,2,3) (0,2,4,5) (1,2,3,4,5) (0,1,3,5) (0,2,4) (1,4,5) (0,1,2,4,5) {230,43,244,34,235,217}
+0; 0; 0; 0; 0; 1; 0xFFFF
+0; 1; 2; 3; 0xFFFE; 0; 2; 4; 5; 0xFFFE; 1; 2; 3; 4; 5; 0xFFFE; 0; 1; 3; 5; 0xFFFE; 0; 2; 4; 0xFFFE; 1; 4; 5; 0xFFFE; 0; 1; 2; 4; 5; 0xFFFE; 0xFFFF
+230; 43; 244; 34; 235; 217; 0xFFFF
+# [#.#.#.#.] (0,1,2,4,5,6) (0,1,2,3,5,7) (1,2,3,7) (0,1,2,3,4,5,7) (0,2,3,5,7) (2,7) (0,1,3,4,6,7) {45,57,77,52,32,38,20,71}
+1; 0; 1; 0; 1; 0; 1; 0; 0xFFFF
+0; 1; 2; 4; 5; 6; 0xFFFE; 0; 1; 2; 3; 5; 7; 0xFFFE; 1; 2; 3; 7; 0xFFFE; 0; 1; 2; 3; 4; 5; 7; 0xFFFE; 0; 2; 3; 5; 7; 0xFFFE; 2; 7; 0xFFFE; 0; 1; 3; 4; 6; 7; 0xFFFE; 0xFFFF
+45; 57; 77; 52; 32; 38; 20; 71; 0xFFFF
+# [##.#.##.] (0,1,4,6) (0,1,3,4,5,6) (1,2,4,5) (1,3,5) (0,1,3,4,5) (0,1,2,3) (1,2,3,7) (1,3,4,6,7) (2,6) {53,80,48,52,52,46,55,3}
+1; 1; 0; 1; 0; 1; 1; 0; 0xFFFF
+0; 1; 4; 6; 0xFFFE; 0; 1; 3; 4; 5; 6; 0xFFFE; 1; 2; 4; 5; 0xFFFE; 1; 3; 5; 0xFFFE; 0; 1; 3; 4; 5; 0xFFFE; 0; 1; 2; 3; 0xFFFE; 1; 2; 3; 7; 0xFFFE; 1; 3; 4; 6; 7; 0xFFFE; 2; 6; 0xFFFE; 0xFFFF
+53; 80; 48; 52; 52; 46; 55; 3; 0xFFFF
+# [##...] (0) (1,2,3) (1,4) (3) (1,2) (1,2,4) {3,128,120,108,10}
+1; 1; 0; 0; 0; 0xFFFF
+0; 0xFFFE; 1; 2; 3; 0xFFFE; 1; 4; 0xFFFE; 3; 0xFFFE; 1; 2; 0xFFFE; 1; 2; 4; 0xFFFE; 0xFFFF
+3; 128; 120; 108; 10; 0xFFFF
+# [...#....] (0,1,2,3,4,5,7) (2,4,6) (0,2,4,6,7) (0,1,3,4,7) (0,1,3) (3) (0,2,4,5,7) (1,3,4,5,6,7) {36,19,18,26,31,18,0,31}
+0; 0; 0; 1; 0; 0; 0; 0; 0xFFFF
+0; 1; 2; 3; 4; 5; 7; 0xFFFE; 2; 4; 6; 0xFFFE; 0; 2; 4; 6; 7; 0xFFFE; 0; 1; 3; 4; 7; 0xFFFE; 0; 1; 3; 0xFFFE; 3; 0xFFFE; 0; 2; 4; 5; 7; 0xFFFE; 1; 3; 4; 5; 6; 7; 0xFFFE; 0xFFFF
+36; 19; 18; 26; 31; 18; 0; 31; 0xFFFF
+# [###.] (1,2,3) (0,1,2) {100,109,109,9}
+1; 1; 1; 0; 0xFFFF
+1; 2; 3; 0xFFFE; 0; 1; 2; 0xFFFE; 0xFFFF
+100; 109; 109; 9; 0xFFFF
+# [####..] (0,1) (0,3,4,5) (0,2,4,5) (0,2,3,5) (3,4) {54,14,31,24,29,40}
+1; 1; 1; 1; 0; 0; 0xFFFF
+0; 1; 0xFFFE; 0; 3; 4; 5; 0xFFFE; 0; 2; 4; 5; 0xFFFE; 0; 2; 3; 5; 0xFFFE; 3; 4; 0xFFFE; 0xFFFF
+54; 14; 31; 24; 29; 40; 0xFFFF
+# [.#....#..#] (0,4,5,7,8,9) (2,4) (1,2,3,6,9) (0,2,3,5,6,7,8,9) (0,4,5,6,9) (1,2,3,4,5,6,7,8) (1,3,4,8) (2,5,6,7) (2,4,8) (5,7) (1,3,6,7) {26,49,83,58,82,60,71,45,63,39}
+0; 1; 0; 0; 0; 0; 1; 0; 0; 1; 0xFFFF
+0; 4; 5; 7; 8; 9; 0xFFFE; 2; 4; 0xFFFE; 1; 2; 3; 6; 9; 0xFFFE; 0; 2; 3; 5; 6; 7; 8; 9; 0xFFFE; 0; 4; 5; 6; 9; 0xFFFE; 1; 2; 3; 4; 5; 6; 7; 8; 0xFFFE; 1; 3; 4; 8; 0xFFFE; 2; 5; 6; 7; 0xFFFE; 2; 4; 8; 0xFFFE; 5; 7; 0xFFFE; 1; 3; 6; 7; 0xFFFE; 0xFFFF
+26; 49; 83; 58; 82; 60; 71; 45; 63; 39; 0xFFFF
+# [..#....###] (1,4,5,7,8,9) (2,3,4,5,7) (0,4) (0,1,6,8) (3,5) (0,2,3,4,5,6,7,8) (0,3,5,6,7,9) (0,1,2,3,5,6,7,8) (1,4,5,6) (0,1,2,3,5,6,8,9) (0,3,5,9) (0,2,3,4,5,7,9) (1,8,9) {78,30,51,90,71,104,54,67,29,51}
+0; 0; 1; 0; 0; 0; 0; 1; 1; 1; 0xFFFF
+1; 4; 5; 7; 8; 9; 0xFFFE; 2; 3; 4; 5; 7; 0xFFFE; 0; 4; 0xFFFE; 0; 1; 6; 8; 0xFFFE; 3; 5; 0xFFFE; 0; 2; 3; 4; 5; 6; 7; 8; 0xFFFE; 0; 3; 5; 6; 7; 9; 0xFFFE; 0; 1; 2; 3; 5; 6; 7; 8; 0xFFFE; 1; 4; 5; 6; 0xFFFE; 0; 1; 2; 3; 5; 6; 8; 9; 0xFFFE; 0; 3; 5; 9; 0xFFFE; 0; 2; 3; 4; 5; 7; 9; 0xFFFE; 1; 8; 9; 0xFFFE; 0xFFFF
+78; 30; 51; 90; 71; 104; 54; 67; 29; 51; 0xFFFF
+# [.#...] (1,4) (1,2,3) (0,3,4) (1) (2) {1,14,15,1,1}
+0; 1; 0; 0; 0; 0xFFFF
+1; 4; 0xFFFE; 1; 2; 3; 0xFFFE; 0; 3; 4; 0xFFFE; 1; 0xFFFE; 2; 0xFFFE; 0xFFFF
+1; 14; 15; 1; 1; 0xFFFF
+# [.#.######] (0,1,3,8) (0,1,4,5,6) (2,3,5) (1,2,4,5,6,7) (0,1,2,3,5,8) (0,1,2,3,6,8) (0,6,8) (3,6) (1,2,3,4,5,8) (1,7) {83,100,57,64,41,62,61,20,70}
+0; 1; 0; 1; 1; 1; 1; 1; 1; 0xFFFF
+0; 1; 3; 8; 0xFFFE; 0; 1; 4; 5; 6; 0xFFFE; 2; 3; 5; 0xFFFE; 1; 2; 4; 5; 6; 7; 0xFFFE; 0; 1; 2; 3; 5; 8; 0xFFFE; 0; 1; 2; 3; 6; 8; 0xFFFE; 0; 6; 8; 0xFFFE; 3; 6; 0xFFFE; 1; 2; 3; 4; 5; 8; 0xFFFE; 1; 7; 0xFFFE; 0xFFFF
+83; 100; 57; 64; 41; 62; 61; 20; 70; 0xFFFF
+# [####.] (0,1,2,3) (0,1,2,4) (1,4) {13,29,13,7,22}
+1; 1; 1; 1; 0; 0xFFFF
+0; 1; 2; 3; 0xFFFE; 0; 1; 2; 4; 0xFFFE; 1; 4; 0xFFFE; 0xFFFF
+13; 29; 13; 7; 22; 0xFFFF
+# [#.##.] (2,3,4) (0,1) (3,4) (0,2) (0,3) (4) {28,14,15,29,25}
+1; 0; 1; 1; 0; 0xFFFF
+2; 3; 4; 0xFFFE; 0; 1; 0xFFFE; 3; 4; 0xFFFE; 0; 2; 0xFFFE; 0; 3; 0xFFFE; 4; 0xFFFE; 0xFFFF
+28; 14; 15; 29; 25; 0xFFFF
+# [.#######] (2,4,5,6,7) (0,1,2,4,7) (0,1,4,5,7) (0,1,2,3,5,6) (2,5,6) (1,3,4,7) (0,1,5,6,7) {32,49,42,28,51,55,40,53}
+0; 1; 1; 1; 1; 1; 1; 1; 0xFFFF
+2; 4; 5; 6; 7; 0xFFFE; 0; 1; 2; 4; 7; 0xFFFE; 0; 1; 4; 5; 7; 0xFFFE; 0; 1; 2; 3; 5; 6; 0xFFFE; 2; 5; 6; 0xFFFE; 1; 3; 4; 7; 0xFFFE; 0; 1; 5; 6; 7; 0xFFFE; 0xFFFF
+32; 49; 42; 28; 51; 55; 40; 53; 0xFFFF
+# [#.###..##.] (2,4) (1,3,7) (0,2,3,4,5,6,7,8) (9) (1,2,5,7,9) (7,8) (2,3,9) (0,6,7) (0,2,4,8) (0,4,5) (0,1,3,4,5,6,8) (5,9) (1,9) {36,31,187,184,41,49,20,54,24,199}
+1; 0; 1; 1; 1; 0; 0; 1; 1; 0; 0xFFFF
+2; 4; 0xFFFE; 1; 3; 7; 0xFFFE; 0; 2; 3; 4; 5; 6; 7; 8; 0xFFFE; 9; 0xFFFE; 1; 2; 5; 7; 9; 0xFFFE; 7; 8; 0xFFFE; 2; 3; 9; 0xFFFE; 0; 6; 7; 0xFFFE; 0; 2; 4; 8; 0xFFFE; 0; 4; 5; 0xFFFE; 0; 1; 3; 4; 5; 6; 8; 0xFFFE; 5; 9; 0xFFFE; 1; 9; 0xFFFE; 0xFFFF
+36; 31; 187; 184; 41; 49; 20; 54; 24; 199; 0xFFFF
+# [###.] (2,3) (0,2) (1,2) (1,2,3) {5,174,191,179}
+1; 1; 1; 0; 0xFFFF
+2; 3; 0xFFFE; 0; 2; 0xFFFE; 1; 2; 0xFFFE; 1; 2; 3; 0xFFFE; 0xFFFF
+5; 174; 191; 179; 0xFFFF
+# [.#..] (1,2) (0) (1,2,3) (0,2) (0,2,3) {34,22,54,15}
+0; 1; 0; 0; 0xFFFF
+1; 2; 0xFFFE; 0; 0xFFFE; 1; 2; 3; 0xFFFE; 0; 2; 0xFFFE; 0; 2; 3; 0xFFFE; 0xFFFF
+34; 22; 54; 15; 0xFFFF
+# [.......##.] (0,3,5,6,7) (1,2,3,4,6,7,8) (0,6,8) (4,6) (1,2,3,4,6,7,9) (4,6,7) (1,3,4,5,7,8,9) (2,3,4,8) {17,45,34,60,64,26,64,69,34,33}
+0; 0; 0; 0; 0; 0; 0; 1; 1; 0; 0xFFFF
+0; 3; 5; 6; 7; 0xFFFE; 1; 2; 3; 4; 6; 7; 8; 0xFFFE; 0; 6; 8; 0xFFFE; 4; 6; 0xFFFE; 1; 2; 3; 4; 6; 7; 9; 0xFFFE; 4; 6; 7; 0xFFFE; 1; 3; 4; 5; 7; 8; 9; 0xFFFE; 2; 3; 4; 8; 0xFFFE; 0xFFFF
+17; 45; 34; 60; 64; 26; 64; 69; 34; 33; 0xFFFF
+# [#..###] (0,1,2) (0,3) (3,4) (0,2,3,4) (0,1,2,4,5) (0,2,3) (1,3,4,5) {49,23,36,79,48,17}
+1; 0; 0; 1; 1; 1; 0xFFFF
+0; 1; 2; 0xFFFE; 0; 3; 0xFFFE; 3; 4; 0xFFFE; 0; 2; 3; 4; 0xFFFE; 0; 1; 2; 4; 5; 0xFFFE; 0; 2; 3; 0xFFFE; 1; 3; 4; 5; 0xFFFE; 0xFFFF
+49; 23; 36; 79; 48; 17; 0xFFFF
+# [.#...#.] (0,1,2) (1,2,3,4,6) (0,2,3,4,5) (1,6) (3,4) {205,33,211,222,222,197,25}
+0; 1; 0; 0; 0; 1; 0; 0xFFFF
+0; 1; 2; 0xFFFE; 1; 2; 3; 4; 6; 0xFFFE; 0; 2; 3; 4; 5; 0xFFFE; 1; 6; 0xFFFE; 3; 4; 0xFFFE; 0xFFFF
+205; 33; 211; 222; 222; 197; 25; 0xFFFF
+# [##..] (0,2,3) (1,2,3) (0,1) {6,11,17,17}
+1; 1; 0; 0; 0xFFFF
+0; 2; 3; 0xFFFE; 1; 2; 3; 0xFFFE; 0; 1; 0xFFFE; 0xFFFF
+6; 11; 17; 17; 0xFFFF
+# [...##.....] (1,2,3,4,5,7,9) (1,3,4,5,7,9) (0,4) (3,4,5) (0,2,3,8,9) (1,3,6,8) (0,1,2,3,4,6,9) (0,2,8,9) {50,162,39,188,186,160,15,147,26,184}
+0; 0; 0; 1; 1; 0; 0; 0; 0; 0; 0xFFFF
+1; 2; 3; 4; 5; 7; 9; 0xFFFE; 1; 3; 4; 5; 7; 9; 0xFFFE; 0; 4; 0xFFFE; 3; 4; 5; 0xFFFE; 0; 2; 3; 8; 9; 0xFFFE; 1; 3; 6; 8; 0xFFFE; 0; 1; 2; 3; 4; 6; 9; 0xFFFE; 0; 2; 8; 9; 0xFFFE; 0xFFFF
+50; 162; 39; 188; 186; 160; 15; 147; 26; 184; 0xFFFF
+# [....#.#..] (0,1,6) (0,2,7) (2,3,8) (0,1,3,4,5,6,8) (0,1,2,3,5,6) (1,2,3,4,5,8) (0,1,2,3,4,6,7,8) (0,8) (2,6) (0,1,4,5,6,8) (0,6,8) {78,62,55,49,36,30,71,26,52}
+0; 0; 0; 0; 1; 0; 1; 0; 0; 0xFFFF
+0; 1; 6; 0xFFFE; 0; 2; 7; 0xFFFE; 2; 3; 8; 0xFFFE; 0; 1; 3; 4; 5; 6; 8; 0xFFFE; 0; 1; 2; 3; 5; 6; 0xFFFE; 1; 2; 3; 4; 5; 8; 0xFFFE; 0; 1; 2; 3; 4; 6; 7; 8; 0xFFFE; 0; 8; 0xFFFE; 2; 6; 0xFFFE; 0; 1; 4; 5; 6; 8; 0xFFFE; 0; 6; 8; 0xFFFE; 0xFFFF
+78; 62; 55; 49; 36; 30; 71; 26; 52; 0xFFFF
+# [..#.#.##] (2,3,4,5,6) (4,5,7) (0,1,3,4,5,7) (0,1,2,5,6) (3,4,5,7) (0,2,3,5,6,7) (1,4,7) (0,1,2,3,4,5,6) {38,53,30,50,66,67,30,56}
+0; 0; 1; 0; 1; 0; 1; 1; 0xFFFF
+2; 3; 4; 5; 6; 0xFFFE; 4; 5; 7; 0xFFFE; 0; 1; 3; 4; 5; 7; 0xFFFE; 0; 1; 2; 5; 6; 0xFFFE; 3; 4; 5; 7; 0xFFFE; 0; 2; 3; 5; 6; 7; 0xFFFE; 1; 4; 7; 0xFFFE; 0; 1; 2; 3; 4; 5; 6; 0xFFFE; 0xFFFF
+38; 53; 30; 50; 66; 67; 30; 56; 0xFFFF
+# [##..##..#.] (5) (1,7) (0,3) (0,1,2,6) (2,3,8,9) (0,1,2,3,8,9) (0,4,6,7,9) (2,9) (0,2,9) {72,24,51,22,19,4,30,19,13,59}
+1; 1; 0; 0; 1; 1; 0; 0; 1; 0; 0xFFFF
+5; 0xFFFE; 1; 7; 0xFFFE; 0; 3; 0xFFFE; 0; 1; 2; 6; 0xFFFE; 2; 3; 8; 9; 0xFFFE; 0; 1; 2; 3; 8; 9; 0xFFFE; 0; 4; 6; 7; 9; 0xFFFE; 2; 9; 0xFFFE; 0; 2; 9; 0xFFFE; 0xFFFF
+72; 24; 51; 22; 19; 4; 30; 19; 13; 59; 0xFFFF
+# [##..##.#] (0,3,7) (1,2,4,5) (0,1,4,6) (1,3,4,5,6) (1,2,4) (2,6,7) (0,1,3,4,7) (5) (0,1,2,5,6,7) {39,54,34,20,44,35,48,32}
+1; 1; 0; 0; 1; 1; 0; 1; 0xFFFF
+0; 3; 7; 0xFFFE; 1; 2; 4; 5; 0xFFFE; 0; 1; 4; 6; 0xFFFE; 1; 3; 4; 5; 6; 0xFFFE; 1; 2; 4; 0xFFFE; 2; 6; 7; 0xFFFE; 0; 1; 3; 4; 7; 0xFFFE; 5; 0xFFFE; 0; 1; 2; 5; 6; 7; 0xFFFE; 0xFFFF
+39; 54; 34; 20; 44; 35; 48; 32; 0xFFFF
+# [.##.] (0,1) (0,2) (1,2,3) (1) (0,3) {45,42,28,29}
+0; 1; 1; 0; 0xFFFF
+0; 1; 0xFFFE; 0; 2; 0xFFFE; 1; 2; 3; 0xFFFE; 1; 0xFFFE; 0; 3; 0xFFFE; 0xFFFF
+45; 42; 28; 29; 0xFFFF
+# [..##.##] (1) (1,2,3,4,5) (2,6) (0,1,2,5,6) (1,2,3,4,5,6) (2,3,5,6) (0,1,2,6) {30,60,66,36,19,52,66}
+0; 0; 1; 1; 0; 1; 1; 0xFFFF
+1; 0xFFFE; 1; 2; 3; 4; 5; 0xFFFE; 2; 6; 0xFFFE; 0; 1; 2; 5; 6; 0xFFFE; 1; 2; 3; 4; 5; 6; 0xFFFE; 2; 3; 5; 6; 0xFFFE; 0; 1; 2; 6; 0xFFFE; 0xFFFF
+30; 60; 66; 36; 19; 52; 66; 0xFFFF
+# [#..####] (1,3,4,6) (0,1,2,4,5) (0,2,3,4,5) (1,2) (1,2,4,6) (0,2,4,5,6) (0,1,2,3,4,5) (0,1,2,3,4) (0,1,3,4,5,6) {212,236,221,44,222,200,34}
+1; 0; 0; 1; 1; 1; 1; 0xFFFF
+1; 3; 4; 6; 0xFFFE; 0; 1; 2; 4; 5; 0xFFFE; 0; 2; 3; 4; 5; 0xFFFE; 1; 2; 0xFFFE; 1; 2; 4; 6; 0xFFFE; 0; 2; 4; 5; 6; 0xFFFE; 0; 1; 2; 3; 4; 5; 0xFFFE; 0; 1; 2; 3; 4; 0xFFFE; 0; 1; 3; 4; 5; 6; 0xFFFE; 0xFFFF
+212; 236; 221; 44; 222; 200; 34; 0xFFFF
+# [.#.#.#.##] (0,1,3,4,5,6,7) (0,2,4,5,6,7,8) (0,4,6) (2,4,5,8) (3) (0,1,2,7) (0,1,2,3,6,7) (0,1,4,5,6) (4,7,8) (2,4) (7,8) {97,65,63,37,97,61,79,89,49}
+0; 1; 0; 1; 0; 1; 0; 1; 1; 0xFFFF
+0; 1; 3; 4; 5; 6; 7; 0xFFFE; 0; 2; 4; 5; 6; 7; 8; 0xFFFE; 0; 4; 6; 0xFFFE; 2; 4; 5; 8; 0xFFFE; 3; 0xFFFE; 0; 1; 2; 7; 0xFFFE; 0; 1; 2; 3; 6; 7; 0xFFFE; 0; 1; 4; 5; 6; 0xFFFE; 4; 7; 8; 0xFFFE; 2; 4; 0xFFFE; 7; 8; 0xFFFE; 0xFFFF
+97; 65; 63; 37; 97; 61; 79; 89; 49; 0xFFFF
+# [..#.#.#..#] (1,3,4,5,6,7,8,9) (0,2,3,4,7) (0,1,2,3,7,8,9) (0,1,2,3,4,9) (1,2,3,4,6,7,8) (0,1,2,3,5,6,7,8,9) (2,3,7) (1,2,5) (0,1,2,3,4,5,6,7,8) (1,4,5,8,9) (0,1,2,3,5,6,8,9) (0,1,3,7,8) (0,2,4,6,8,9) {87,134,107,105,80,83,69,86,116,84}
+0; 0; 1; 0; 1; 0; 1; 0; 0; 1; 0xFFFF
+1; 3; 4; 5; 6; 7; 8; 9; 0xFFFE; 0; 2; 3; 4; 7; 0xFFFE; 0; 1; 2; 3; 7; 8; 9; 0xFFFE; 0; 1; 2; 3; 4; 9; 0xFFFE; 1; 2; 3; 4; 6; 7; 8; 0xFFFE; 0; 1; 2; 3; 5; 6; 7; 8; 9; 0xFFFE; 2; 3; 7; 0xFFFE; 1; 2; 5; 0xFFFE; 0; 1; 2; 3; 4; 5; 6; 7; 8; 0xFFFE; 1; 4; 5; 8; 9; 0xFFFE; 0; 1; 2; 3; 5; 6; 8; 9; 0xFFFE; 0; 1; 3; 7; 8; 0xFFFE; 0; 2; 4; 6; 8; 9; 0xFFFE; 0xFFFF
+87; 134; 107; 105; 80; 83; 69; 86; 116; 84; 0xFFFF
+# [..#.#..##] (1,7) (1,2,6,7,8) (0,2,4,5,7,8) (5,8) (0,1,2,3,5,6,7,8) (6,7,8) (0,1,2,4,6,7,8) (3) {43,42,52,19,29,45,44,62,75}
+0; 0; 1; 0; 1; 0; 0; 1; 1; 0xFFFF
+1; 7; 0xFFFE; 1; 2; 6; 7; 8; 0xFFFE; 0; 2; 4; 5; 7; 8; 0xFFFE; 5; 8; 0xFFFE; 0; 1; 2; 3; 5; 6; 7; 8; 0xFFFE; 6; 7; 8; 0xFFFE; 0; 1; 2; 4; 6; 7; 8; 0xFFFE; 3; 0xFFFE; 0xFFFF
+43; 42; 52; 19; 29; 45; 44; 62; 75; 0xFFFF
+# [#.##.###] (2,6,7) (2,4) (0,2,3,5,6,7) (1,3,4,5) (1,2,3,4,6,7) (2,3,4,5) {11,18,166,163,170,162,14,14}
+1; 0; 1; 1; 0; 1; 1; 1; 0xFFFF
+2; 6; 7; 0xFFFE; 2; 4; 0xFFFE; 0; 2; 3; 5; 6; 7; 0xFFFE; 1; 3; 4; 5; 0xFFFE; 1; 2; 3; 4; 6; 7; 0xFFFE; 2; 3; 4; 5; 0xFFFE; 0xFFFF
+11; 18; 166; 163; 170; 162; 14; 14; 0xFFFF
+# [.#####] (0,1,4,5) (4,5) (2) (0,1,3) (0) (0,1,2,4,5) (0,1,4) (1,2,4) {150,137,18,12,128,23}
+0; 1; 1; 1; 1; 1; 0xFFFF
+0; 1; 4; 5; 0xFFFE; 4; 5; 0xFFFE; 2; 0xFFFE; 0; 1; 3; 0xFFFE; 0; 0xFFFE; 0; 1; 2; 4; 5; 0xFFFE; 0; 1; 4; 0xFFFE; 1; 2; 4; 0xFFFE; 0xFFFF
+150; 137; 18; 12; 128; 23; 0xFFFF
+# [#.#.##.##] (0,7,8) (0,1,2,3,4,5,6,8) (6,7) (0,2,4,5,7,8) (1,4,8) (0,1,4,5,6,7) (0,3) {67,36,26,40,42,29,34,38,57}
+1; 0; 1; 0; 1; 1; 0; 1; 1; 0xFFFF
+0; 7; 8; 0xFFFE; 0; 1; 2; 3; 4; 5; 6; 8; 0xFFFE; 6; 7; 0xFFFE; 0; 2; 4; 5; 7; 8; 0xFFFE; 1; 4; 8; 0xFFFE; 0; 1; 4; 5; 6; 7; 0xFFFE; 0; 3; 0xFFFE; 0xFFFF
+67; 36; 26; 40; 42; 29; 34; 38; 57; 0xFFFF
+# [.#.##..#..] (1,2,4,5,6,7,9) (3,7) (1,3) (0,1,4,5,6,7) (0,2,4,8,9) (1,2,5,7,9) (2,5,6,9) (0,1,2,3,4,7,8,9) {29,27,50,15,30,33,26,22,23,50}
+0; 1; 0; 1; 1; 0; 0; 1; 0; 0; 0xFFFF
+1; 2; 4; 5; 6; 7; 9; 0xFFFE; 3; 7; 0xFFFE; 1; 3; 0xFFFE; 0; 1; 4; 5; 6; 7; 0xFFFE; 0; 2; 4; 8; 9; 0xFFFE; 1; 2; 5; 7; 9; 0xFFFE; 2; 5; 6; 9; 0xFFFE; 0; 1; 2; 3; 4; 7; 8; 9; 0xFFFE; 0xFFFF
+29; 27; 50; 15; 30; 33; 26; 22; 23; 50; 0xFFFF
+# [..#.#..] (0,5) (2,3) (1,3,5,6) (0,2,3) (3,4,5) {8,12,13,37,12,31,12}
+0; 0; 1; 0; 1; 0; 0; 0xFFFF
+0; 5; 0xFFFE; 2; 3; 0xFFFE; 1; 3; 5; 6; 0xFFFE; 0; 2; 3; 0xFFFE; 3; 4; 5; 0xFFFE; 0xFFFF
+8; 12; 13; 37; 12; 31; 12; 0xFFFF
+# [....#] (0,1,3) (0,2,3,4) (0,2,4) (3,4) {46,13,33,39,46}
+0; 0; 0; 0; 1; 0xFFFF
+0; 1; 3; 0xFFFE; 0; 2; 3; 4; 0xFFFE; 0; 2; 4; 0xFFFE; 3; 4; 0xFFFE; 0xFFFF
+46; 13; 33; 39; 46; 0xFFFF
+# [.#.#.###.#] (0,5) (0,1,3,4,6,7,8) (0,1,2,5,6,7,8) (0,1,2,6,7,9) (3,4,6,8) (2,3,4,5,6) (0,1,2,3,4,6,8,9) (3,5,7) (1,3,6) (0,1,5,7,8,9) (2,3,5,6,7,8,9) (1,4) (4,8,9) {61,79,46,93,91,61,86,56,71,37}
+0; 1; 0; 1; 0; 1; 1; 1; 0; 1; 0xFFFF
+0; 5; 0xFFFE; 0; 1; 3; 4; 6; 7; 8; 0xFFFE; 0; 1; 2; 5; 6; 7; 8; 0xFFFE; 0; 1; 2; 6; 7; 9; 0xFFFE; 3; 4; 6; 8; 0xFFFE; 2; 3; 4; 5; 6; 0xFFFE; 0; 1; 2; 3; 4; 6; 8; 9; 0xFFFE; 3; 5; 7; 0xFFFE; 1; 3; 6; 0xFFFE; 0; 1; 5; 7; 8; 9; 0xFFFE; 2; 3; 5; 6; 7; 8; 9; 0xFFFE; 1; 4; 0xFFFE; 4; 8; 9; 0xFFFE; 0xFFFF
+61; 79; 46; 93; 91; 61; 86; 56; 71; 37; 0xFFFF
+# [#.##] (1,3) (0,2,3) {0,13,0,13}
+1; 0; 1; 1; 0xFFFF
+1; 3; 0xFFFE; 0; 2; 3; 0xFFFE; 0xFFFF
+0; 13; 0; 13; 0xFFFF
+# [#..###.#] (4,5,6) (0,2,4,5,6,7) (0,2,4,6,7) (3,5) (2,5,6) (1,3,5,6,7) {101,15,102,26,110,36,126,116}
+1; 0; 0; 1; 1; 1; 0; 1; 0xFFFF
+4; 5; 6; 0xFFFE; 0; 2; 4; 5; 6; 7; 0xFFFE; 0; 2; 4; 6; 7; 0xFFFE; 3; 5; 0xFFFE; 2; 5; 6; 0xFFFE; 1; 3; 5; 6; 7; 0xFFFE; 0xFFFF
+101; 15; 102; 26; 110; 36; 126; 116; 0xFFFF
+# [###.#####] (0,1,2,3,4,5) (1,3,5,6,7) (1,2,4) (1,2,3,4,5,7,8) (2,3,4,6,7) (2,5,6,7,8) (0,2,3,4,5,7,8) (0,1,2,3,4,5,6) (3,5,8) (0,4) {23,45,48,169,58,171,33,43,154}
+1; 1; 1; 0; 1; 1; 1; 1; 1; 0xFFFF
+0; 1; 2; 3; 4; 5; 0xFFFE; 1; 3; 5; 6; 7; 0xFFFE; 1; 2; 4; 0xFFFE; 1; 2; 3; 4; 5; 7; 8; 0xFFFE; 2; 3; 4; 6; 7; 0xFFFE; 2; 5; 6; 7; 8; 0xFFFE; 0; 2; 3; 4; 5; 7; 8; 0xFFFE; 0; 1; 2; 3; 4; 5; 6; 0xFFFE; 3; 5; 8; 0xFFFE; 0; 4; 0xFFFE; 0xFFFF
+23; 45; 48; 169; 58; 171; 33; 43; 154; 0xFFFF
+# [.######] (1,5,6) (0,1,2,4,5) (1,2,3,6) (0,2,4,5,6) (2,3) (0,2,5,6) (1,2,3,4,5,6) (0,1,3) (1,5) {49,65,58,49,40,65,49}
+0; 1; 1; 1; 1; 1; 1; 0xFFFF
+1; 5; 6; 0xFFFE; 0; 1; 2; 4; 5; 0xFFFE; 1; 2; 3; 6; 0xFFFE; 0; 2; 4; 5; 6; 0xFFFE; 2; 3; 0xFFFE; 0; 2; 5; 6; 0xFFFE; 1; 2; 3; 4; 5; 6; 0xFFFE; 0; 1; 3; 0xFFFE; 1; 5; 0xFFFE; 0xFFFF
+49; 65; 58; 49; 40; 65; 49; 0xFFFF
+0xFFFF
