@@ -1,165 +1,62 @@
 # Advent of Code 2025 on the 32-bit CPU
 
-The CPU's board files for the Steam game Virtual Circuit Board (Update 1.0.1), and the programs written for it.
+Every puzzle of Advent of Code 2025 solved by a program running on a 32-bit CPU built in the Steam game Virtual Circuit Board (Update 1.0.1). The CPU is a drawing of wires and gates; the game simulates it tick by tick.
 
-| File | What it is |
-|---|---|
-| `cpu-32bit-manual-start.vcb` | The CPU as built. Its run switch (a 5×5 latch block near x 1100, y 249) is Latch Off, so it starts when the latch is clicked in the game. Formerly `32-bit-alu-try.vcb`. |
-| `cpu-32bit-autorun-aoc1p1.vcb` | The same CPU with the run switch drawn as Latch On, so it runs by itself from the first tick. Its assembly is `days/day1/part1.vcbasm` (Advent of Code day 1, part 1), and the program ends on a Breakpoint. Formerly `CPU.vcb`. |
-| `days/day2/cpu-32bit-autorun-aoc2p1.vcb` | The autorun CPU with `days/day2/part1.vcbasm` as its assembly, for checking day 2 part 1 in the game. Persistent Memory is set to `0x0100`–`0x011E`, where the answer is left. |
-| `days/day2/cpu-32bit-autorun-aoc2p2.vcb` | The same for `days/day2/part2.vcbasm`. |
-| `days/day3/cpu-32bit-autorun-aoc3p1.vcb` | The same for `days/day3/part1.vcbasm`; Persistent Memory `0x0100`–`0x0114`. |
-| `days/day3/cpu-32bit-autorun-aoc3p2.vcb` | The same for `days/day3/part2.vcbasm`; Persistent Memory `0x0110`–`0x011E`. |
-| `days/day4/cpu-32bit-autorun-aoc4p1.vcb` | The same for `days/day4/part1.vcbasm`; Persistent Memory `0x0100`–`0x0114`. |
-| `days/day4/cpu-32bit-autorun-aoc4p2.vcb` | The same for `days/day4/part2.vcbasm`; Persistent Memory `0x0100`–`0x0114`. |
-| `days/day5/cpu-32bit-autorun-aoc5p1.vcb` | The same for `days/day5/part1.vcbasm`; Persistent Memory `0x0100`–`0x0114`. |
-| `days/day5/cpu-32bit-autorun-aoc5p2.vcb` | The same for `days/day5/part2.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
-| `days/day6/cpu-32bit-autorun-aoc6p1.vcb` | The same for `days/day6/part1.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
-| `days/day6/cpu-32bit-autorun-aoc6p2.vcb` | The same for `days/day6/part2.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
-| `days/day7/cpu-32bit-autorun-aoc7p1.vcb` | The same for `days/day7/part1.vcbasm`; Persistent Memory `0x0100`–`0x0114`. |
-| `days/day7/cpu-32bit-autorun-aoc7p2.vcb` | The same for `days/day7/part2.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
-| `days/day8/cpu-32bit-autorun-aoc8p1.vcb` | The same for `days/day8/part1.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
-| `days/day8/cpu-32bit-autorun-aoc8p2.vcb` | The same for `days/day8/part2.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
-| `days/day9/cpu-32bit-autorun-aoc9p1.vcb` | The same for `days/day9/part1.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
-| `days/day9/cpu-32bit-autorun-aoc9p2.vcb` | The same for `days/day9/part2.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
-| `days/day10/cpu-32bit-autorun-aoc10p1.vcb` | The same for `days/day10/part1.vcbasm`; Persistent Memory `0x0100`–`0x0114`. |
-| `days/day10/cpu-32bit-autorun-aoc10p2.vcb` | The same for `days/day10/part2.vcbasm`; Persistent Memory `0x0100`–`0x0114`. |
-| `days/day11/cpu-32bit-autorun-aoc11p1.vcb` | The same for `days/day11/part1.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
-| `days/day11/cpu-32bit-autorun-aoc11p2.vcb` | The same for `days/day11/part2.vcbasm`; Persistent Memory `0x0100`–`0x011E`. |
-| `days/day12/cpu-32bit-autorun-aoc12p1.vcb` | The same for `days/day12/part1.vcbasm`; Persistent Memory `0x0100`–`0x0114`. |
+## The solutions and their speed
 
-The boards differ only in those 24 latch pixels, in the assembly text they carry, and in the Persistent Memory range.
+| Solution | Answer | Ticks to the Breakpoint | In the engine | In the game |
+|---|---|---|---|---|
+| [Day 1 part 1](days/day1/part1.vcbasm) | 1031 | 43,146,512 | 0.3 s | 9 s |
+| [Day 1 part 2](days/day1/part2.vcbasm) | 5831 | 70,339,472 | 0.6 s | 14 s |
+| [Day 2 part 1](days/day2/part1.vcbasm) | 54641809925 | 43,495,312 | 0.2 s | 9 s |
+| [Day 2 part 2](days/day2/part2.vcbasm) | 73694270688 | 75,753,616 | 0.2 s | 15 s |
+| [Day 3 part 1](days/day3/part1.vcbasm) | 16993 | 170,904,144 | 0.5 s | 34 s |
+| [Day 3 part 2](days/day3/part2.vcbasm) | 168617068915447 | 419,669,712 | 1.6 s | 84 s |
+| [Day 4 part 1](days/day4/part1.vcbasm) | 1505 | 481,327,888 | 2.3 s | 1.6 min |
+| [Day 4 part 2](days/day4/part2.vcbasm) | 9182 | 1,339,421,264 | 6.8 s | 4.5 min |
+| [Day 5 part 1](days/day5/part1.vcbasm) | 798 | 800,901,776 | 2.7 s | 2.7 min |
+| [Day 5 part 2](days/day5/part2.vcbasm) | 366181852921027 | 258,090,384 | 0.7 s | 52 s |
+| [Day 6 part 1](days/day6/part1.vcbasm) | 3261038365331 | 455,100,048 | 1.2 s | 1.5 min |
+| [Day 6 part 2](days/day6/part2.vcbasm) | 8342588849093 | 613,674,000 | 2.7 s | 2.0 min |
+| [Day 7 part 1](days/day7/part1.vcbasm) | 1660 | 117,191,312 | 0.6 s | 23 s |
+| [Day 7 part 2](days/day7/part2.vcbasm) | 305999729392659 | 250,336,656 | 1.0 s | 50 s |
+| [Day 8 part 1](days/day8/part1.vcbasm) | 62186 | 1,110,321,360 | 7.8 s | 3.7 min |
+| [Day 8 part 2](days/day8/part2.vcbasm) | 8420405530 | 3,875,322,704 | 27 s | 13 min |
+| [Day 9 part 1](days/day9/part1.vcbasm) | 4771508457 | 205,937,872 | 1.3 s | 41 s |
+| [Day 9 part 2](days/day9/part2.vcbasm) | 1539809693 | 1,329,065,552 | 3.5 s | 4.4 min |
+| [Day 10 part 1](days/day10/part1.vcbasm) | 475 | 1,010,771,664 | 3.1 s | 3.4 min |
+| [Day 10 part 2](days/day10/part2.vcbasm) | 18273 | 10,976,582,736 | 14 s | 37 min |
+| [Day 11 part 1](days/day11/part1.vcbasm) | 652 | 22,973,904 | 0.2 s | 5 s |
+| [Day 11 part 2](days/day11/part2.vcbasm) | 362956369749210 | 269,092,752 | 1.5 s | 54 s |
+| [Day 12](days/day12/part1.vcbasm) | 427 | 464,586,704 | 0.8 s | 1.5 min |
 
-All eight carry two fixes that bring instruction bits to the ALU: the shift fix of 2026-11-17 (50 pixels near x 1120–1129, y 215–224; `shf | n` shifts A left by n) and the xor and neg fix of 2026-11-18 (24 pixels just right of it; `xor` and `neg` work). The fixes and how they were found are in [`findings/cpu-instructions.md`](findings/cpu-instructions.md).
+- **Ticks** are exact and the same in the game (the game's counter shows one more). All 23 programs together take 24,404,007,344 ticks.
+- **In the engine** is one run in the `vcb` engine of the VirtualCircuitBoardCPU repository, which reproduces the game tick for tick, measured on 2026-11-23. These times are rough and change from run to run.
+- **In the game** is worked out from the ticks at 5 million ticks a second; it was not measured in the game.
+- Every program stops with its answer in memory from `0x0100` on, as binary words and as decimal digits one per word from `0x0110`. The header of each file says exactly where.
+- Each folder also has `partN-example.vcbasm`, the same program with the puzzle's example as input, and `cpu-32bit-autorun-aocNpM.vcb`, a board that carries the program for running it in the game.
+- **Day 12** decides every region of the puzzle input for certain, but does not solve the puzzle's small example; see its notes below.
 
-These boards run in the game, and in the `vcb` engine of the VirtualCircuitBoardCPU repository, which reproduces the game tick for tick. That engine's fixture `engine/tests/boards/cpu-aoc1p1.vcb` is the autorun board with the program already assembled into its memory by the game; its README explains how to run a program.
+The rules the puzzles were solved under are in [`RULES.md`](RULES.md): only the form of the input is changed outside the CPU, and every decision and every sum happens in the program.
 
-## Programs
+## How the CPU is set up
 
-The rules the puzzles are solved under are in [`RULES.md`](RULES.md).
+- **Two 32-bit registers, A and B.** Arithmetic and logic work on A with B: add, subtract, and, or, xor, not, and a shift to the left. There is no multiply, no divide and no shift to the right.
+- **Memory of 16-bit words at 16-bit addresses.** Program, data and variables share it. A register's two halves are loaded and stored as two separate words.
+- **It starts at `0xFF00`** and runs until it executes the word 0, which stops it on a Breakpoint. Only 256 words follow `0xFF00`, so a program jumps from there to its code at `0x1000`.
+- **A stack** for `psh`, `pop`, `call` and `ret` starts at `0xE000` and grows upwards.
+- **A program is assembly text** in the game's Assembly Editor: the game assembles it into the CPU's memory when a simulation starts. The puzzle input is part of that text, as data words.
+- **The answer is read from memory.** With the game's Persistent Memory set to the answer's addresses, the words stay in the project after the run.
+- **Two boards:** `cpu-32bit-manual-start.vcb` is the CPU as built, started by clicking its run switch in the game; `cpu-32bit-autorun-aoc1p1.vcb` has the switch drawn on, so it runs from the first tick. The boards in the day folders are the second one with another program and Persistent Memory range.
+- **Two fixes** were drawn into every board: one that makes the shift work and one for xor and not. They and everything else found out about the CPU by test programs are in [`findings/cpu-instructions.md`](findings/cpu-instructions.md).
 
-`days/` holds the assembly programs for the CPU, one folder per day, in the game's assembly language:
+To run a solution in the engine, from `engine/` in the VirtualCircuitBoardCPU repository:
 
-| File | Program |
-|---|---|
-| `days/day1/part1.vcbasm` | Advent of Code day 1, part 1 |
-| `days/day1/part2.vcbasm` | Advent of Code day 1, part 2 |
-| `days/day2/part1.vcbasm` | Advent of Code day 2, part 1. The header says where the answer is left |
-| `days/day2/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 1227775554) |
-| `days/day2/part2.vcbasm` | Advent of Code day 2, part 2. The header says where the answer is left |
-| `days/day2/part2-example.vcbasm` | The same program with the puzzle's example as input (answer 4174379265) |
-| `days/day3/part1.vcbasm` | Advent of Code day 3, part 1. The header says where the answer is left |
-| `days/day3/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 357) |
-| `days/day3/part2.vcbasm` | Advent of Code day 3, part 2. The header says where the answer is left |
-| `days/day3/part2-example.vcbasm` | The same program with the puzzle's example as input (answer 3121910778619) |
-| `days/day4/part1.vcbasm` | Advent of Code day 4, part 1. The header says where the answer is left |
-| `days/day4/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 13) |
-| `days/day4/part2.vcbasm` | Advent of Code day 4, part 2. The header says where the answer is left |
-| `days/day4/part2-example.vcbasm` | The same program with the puzzle's example as input (answer 43) |
-| `days/day5/part1.vcbasm` | Advent of Code day 5, part 1. The header says where the answer is left |
-| `days/day5/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 3) |
-| `days/day5/part2.vcbasm` | Advent of Code day 5, part 2. The header says where the answer is left |
-| `days/day5/part2-example.vcbasm` | The same program with the puzzle's example as input (answer 14) |
-| `days/day6/part1.vcbasm` | Advent of Code day 6, part 1. The header says where the answer is left |
-| `days/day6/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 4277556) |
-| `days/day6/part2.vcbasm` | Advent of Code day 6, part 2. The header says where the answer is left |
-| `days/day6/part2-example.vcbasm` | The same program with the puzzle's example as input (answer 3263827) |
-| `days/day7/part1.vcbasm` | Advent of Code day 7, part 1. The header says where the answer is left |
-| `days/day7/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 21) |
-| `days/day7/part2.vcbasm` | Advent of Code day 7, part 2. The header says where the answer is left |
-| `days/day7/part2-example.vcbasm` | The same program with the puzzle's example as input (answer 40) |
-| `days/day8/part1.vcbasm` | Advent of Code day 8, part 1. The header says where the answer is left |
-| `days/day8/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 40) |
-| `days/day8/part2.vcbasm` | Advent of Code day 8, part 2. The header says where the answer is left |
-| `days/day8/part2-example.vcbasm` | The same program with the puzzle's example as input (answer 25272) |
-| `days/day9/part1.vcbasm` | Advent of Code day 9, part 1. The header says where the answer is left |
-| `days/day9/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 50) |
-| `days/day9/part2.vcbasm` | Advent of Code day 9, part 2. The header says where the answer is left |
-| `days/day9/part2-example.vcbasm` | The same program with the puzzle's example as input (answer 24) |
-| `days/day10/part1.vcbasm` | Advent of Code day 10, part 1. The header says where the answer is left |
-| `days/day10/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 7) |
-| `days/day10/part2.vcbasm` | Advent of Code day 10, part 2. The header says where the answer is left |
-| `days/day10/part2-example.vcbasm` | The same program with the puzzle's example as input (answer 33) |
-| `days/day11/part1.vcbasm` | Advent of Code day 11, part 1. The header says where the answer is left |
-| `days/day11/part1-example.vcbasm` | The same program with the puzzle's example as input (answer 5) |
-| `days/day11/part2.vcbasm` | Advent of Code day 11, part 2. The header says where the answer is left |
-| `days/day11/part2-example.vcbasm` | The same program with the puzzle's second example as input (answer 2) |
-| `days/day12/part1.vcbasm` | Advent of Code day 12. The header says where the answer is left |
-| `days/day12/part1-example.vcbasm` | The same program with the puzzle's example as input. **It does not solve the example** (answer 2): it leaves all three regions undecided, see the notes |
+```
+./target/release/vcb run ../AoC2025/cpu-32bit-autorun-aoc1p1.vcb --asm ../AoC2025/days/day5/part1.vcbasm --ticks 2000000000 --watch 0x100
+```
 
-## How a solution is written
-
-Every solution from day 2 on follows the same form, so it can be read without running it. (The day 1 programs came first and are shorter on comments.)
-
-- **An explanation at the top of the file:** the puzzle in two sentences, the idea the solution rests on with a worked example, where the answer is left in memory, how the input is encoded, the built-in limits, and a memory map.
-- **The whole program in pseudo code**, about twenty lines, in the same header.
-- **Pseudo code before each section** of the assembly (each loop, each subroutine), saying what that block does in terms of the variables.
-- **A comment on the code rows**, at the end of the line, in terms of the variables: `# SRC = SRC + 1`, `# word 1: A = carry + C_1 + S_1`, `# HI < C: past the end of the range`. Table and data rows say what the words are in decimal.
-- **Names over numbers:** every variable is a `pointer` with a name, every jump target a label.
-- **Macros for the common operations** (the programs of days 2 to 4 were rewritten with them on 2026-11-18, storing the same words as before; day 1 is the owner's own and stays as it is): a program defines the ones it uses from [Macros for the common operations](#macros-for-the-common-operations) after its instruction symbols and uses them wherever the operation occurs, so a row reads `getA ROW; getB GRID; if_lt DONE` and not ten instructions. An operation the program itself repeats often gets its own macro in the same way.
-
-A comment explains what the line means for the program, not what the instruction does; what the instructions do is in [`findings/cpu-instructions.md`](findings/cpu-instructions.md).
-
-## Performance
-
-Measured in the `vcb` engine on `cpu-32bit-autorun-aoc1p1.vcb`, to the Breakpoint. The tick count is the same in the game (the game's counter shows one more). The engine runs 5 to 6 million ticks per second on the machine these were measured on, depending on what else it is doing, so the times are rough; the tick counts are exact.
-
-| Program | Answer | Ticks | Engine time | Instructions run (about) | Program and data |
-|---|---|---|---|---|---|
-| Day 1 part 1 | 1031 | 43,146,512 | 7.4 s | 169,000 | 8,399 words |
-| Day 1 part 2 | 5831 | 70,339,472 | 11.6 s | 275,000 | 8,427 words |
-| Day 2 part 1, example | 1227775554 | 10,383,248 | 1.7 s | 41,000 | 633 words |
-| Day 2 part 1 | 54641809925 | 43,495,312 | 7.1 s | 170,000 | 777 words |
-| Day 2 part 2, example | 4174379265 | 19,838,992 | 3.3 s | 77,000 | 810 words |
-| Day 2 part 2 | 73694270688 | 75,753,616 | 12.3 s | 296,000 | 954 words |
-| Day 3 part 1, example | 357 | 682,000 | 0.1 s | 2,700 | 251 words |
-| Day 3 part 1 | 16993 | 170,904,144 | 26.7 s | 668,000 | 20,387 words |
-| Day 3 part 2, example | 3121910778619 | 1,384,016 | 0.2 s | 5,400 | 270 words |
-| Day 3 part 2 | 168617068915447 | 419,669,712 | 65.0 s | 1,639,000 | 20,406 words |
-| Day 4 part 1, example | 13 | 2,877,648 | 0.5 s | 11,000 | 316 words |
-| Day 4 part 1 | 1505 | 481,327,888 | 91 s | 1,880,000 | 19,388 words |
-| Day 4 part 2, example | 43 | 6,508,752 | 1.5 s | 25,000 | 425 words |
-| Day 4 part 2 | 9182 | 1,339,421,264 | 4.6 min | 5,232,000 | 19,497 words |
-| Day 5 part 1, example | 3 | 437,776 | 0.01 s | 1,700 | 287 words |
-| Day 5 part 1 | 798 | 800,901,776 | 2.4 s | 3,129,000 | 5,727 words |
-| Day 5 part 2, example | 14 | 1,343,056 | 0.01 s | 5,200 | 650 words |
-| Day 5 part 2 | 366181852921027 | 258,090,384 | 0.6 s | 1,008,000 | 2,114 words |
-| Day 6 part 1, example | 4277556 | 2,878,992 | 0.02 s | 11,000 | 683 words |
-| Day 6 part 1 | 3261038365331 | 455,100,048 | 1.1 s | 1,778,000 | 5,668 words |
-| Day 6 part 2, example | 3263827 | 3,188,688 | 0.03 s | 12,000 | 779 words |
-| Day 6 part 2 | 8342588849093 | 613,674,000 | 2.4 s | 2,397,000 | 19,370 words |
-| Day 7 part 1, example | 21 | 1,541,584 | 0.01 s | 6,000 | 402 words |
-| Day 7 part 1 | 1660 | 117,191,312 | 0.4 s | 458,000 | 20,310 words |
-| Day 7 part 2, example | 40 | 3,740,432 | 0.03 s | 15,000 | 733 words |
-| Day 7 part 2 | 305999729392659 | 250,336,656 | 0.9 s | 978,000 | 20,641 words |
-| Day 8 part 1, example | 40 | 55,338,064 | 0.5 s | 216,000 | 2,016 words |
-| Day 8 part 1 | 62186 | 1,110,321,360 | 7 s | 4,337,000 | 7,896 words |
-| Day 8 part 2, example | 25272 | 69,949,200 | 0.5 s | 273,000 | 2,290 words |
-| Day 8 part 2 | 8420405530 | 3,875,322,704 | 26 s | 15,138,000 | 8,170 words |
-| Day 9 part 1, example | 50 | 10,096,016 | 0.07 s | 39,000 | 1,514 words |
-| Day 9 part 1 | 4771508457 | 205,937,872 | 1.4 s | 804,000 | 3,466 words |
-| Day 9 part 2, example | 24 | 48,398,544 | 0.08 s | 189,000 | 1,804 words |
-| Day 9 part 2 | 1539809693 | 1,329,065,552 | 3.5 s | 5,192,000 | 3,756 words |
-| Day 10 part 1, example | 7 | 1,645,840 | 0.02 s | 6,400 | 465 words |
-| Day 10 part 1 | 475 | 1,010,771,664 | 2.9 s | 3,948,000 | 9,846 words |
-| Day 10 part 2, example | 33 | 10,531,024 | 0.07 s | 41,000 | 1,549 words |
-| Day 10 part 2 | 18273 | 10,976,582,736 | 13 s | 42,877,000 | 10,930 words |
-| Day 11 part 1, example | 5 | 1,363,344 | 0.02 s | 5,300 | 612 words |
-| Day 11 part 1 | 652 | 22,973,904 | 0.2 s | 90,000 | 3,333 words |
-| Day 11 part 2, example | 2 | 3,571,984 | 0.04 s | 14,000 | 751 words |
-| Day 11 part 2 | 362956369749210 | 269,092,752 | 1.4 s | 1,051,000 | 3,467 words |
-| Day 12, example | not decided (0 fit for certain, 3 undecided; the answer is 2) | 1,284,880 | 0.01 s | 5,000 | 455 words |
-| Day 12 | 427 | 464,586,704 | 0.8 s | 1,815,000 | 9,428 words |
-
-"Instructions run" is the tick count divided by 256, the cost of most instructions:
-
-| Instruction | Ticks |
-|---|---|
-| `lia`, `lib`, `load`, `store`, `sum`, `sub`, `and`, `or`, `xor`, `neg`, `shf` | 256 |
-| `psh` and `pop` together | 576 |
-| `jmp`, taken | 320 |
-| `jmp` with a condition, not taken | 192 |
-| `call` and `ret` together | 1,088 |
+## Notes on the solutions
 
 Notes on the day 2 solutions:
 
@@ -184,7 +81,7 @@ Notes on the day 4 solutions:
 - **Where the time goes.** 12,318 of the 19,044 cells hold a roll, and each roll costs about 145 instructions: nine cells read through a pointer and added to a sum kept in memory. An empty cell costs about 14.
 - **Size:** part 1 has 169 instructions; the rest of the 19,388 words is the grid, one word per cell.
 - **Part 2 walks the grid once.** A roll is removed the moment it is found removable, and only its neighbours that the walk has already passed are put on a to-do stack and looked at again. That is 21,385 looks at a roll; sweeping the whole grid until nothing changes would take 49 sweeps and 195,394 looks. The stack never held more than 103 addresses.
-- **Part 2 is the longest run so far** (4.6 minutes in the engine): each look still costs about 145 instructions, and each of the 9,182 removals another 170 or so to test and note its eight neighbours.
+- **Where part 2's time goes:** each look still costs about 145 instructions, and each of the 9,182 removals another 170 or so to test and note its eight neighbours.
 - **Part 2's size:** 263 instructions.
 
 Notes on the day 5 solutions:
@@ -192,7 +89,6 @@ Notes on the day 5 solutions:
 - **Numbers of four words.** The IDs need 49 bits, so each is four 16-bit words, and two numbers are compared from the top word down; the first pair of words that differs decides. With this input the second pair nearly always does.
 - **Every ID against every range, in the order given.** That is 106,205 tests of an ID against a range (1,000 IDs, 187 ranges, stopping at the first range that holds the ID), about 29 instructions each. Nothing is sorted: sorting and merging the ranges on this CPU would cost more than these tests save.
 - **No test for the end of the ranges.** The list ends with a range that holds every ID, so the search always stops; only then does the program look whether it stopped at that end mark.
-- **Engine time** is from 2026-11-20, when the engine ran about 340 million ticks per second on this program; the rows above were measured with the engine as it was on 2026-11-18.
 - **Size:** 197 words of code; the rest of the 5,727 words is the input.
 - **Part 2 counts upwards and sorts nothing.** It keeps the first ID not dealt with yet. A step reads all ranges, takes the one that begins first among those not ending below that ID, adds its uncounted part to the total and moves on to the ID after its end. Overlaps are never counted twice and the ranges stay as they are. This input needs 152 steps for its 187 ranges, 28,424 looks at a range, about 30 instructions each.
 - **Part 2 subtracts by adding.** The CPU cannot borrow from one word to the next, so X - Y is X + (Y with every bit flipped) + 1, word by word. The carry out of the top word tells whether X >= Y, so the same subroutine compares, and it also makes the 15 decimal digits of the answer (how often each power of ten can be taken away).
@@ -235,8 +131,8 @@ How the day 8 programs got faster (ticks to the Breakpoint; every step was measu
 
 | Version | Part 1 | Part 2 |
 |---|---|---|
-| First (commits `d8ee21d`, `9154cba`): every round goes through all pairs, T doubles one step at a time, squares bit by bit, part 2 rebuilds the circuits for each of 30 trials | 22,469,978,064 | 66,405,158,992 |
-| Second (commit `582edce`): sorted by X, squares from a table, T grown by a guess, part 2's trials built on each other | 2,708,835,664 | 8,664,842,064 |
+| First (commits `0b4a492`, `4231ced`): every round goes through all pairs, T doubles one step at a time, squares bit by bit, part 2 rebuilds the circuits for each of 30 trials | 22,469,978,064 | 66,405,158,992 |
+| Second (commit `594fdb5`): sorted by X, squares from a table, T grown by a guess, part 2's trials built on each other | 2,708,835,664 | 8,664,842,064 |
 | Second + part 2 aims T at four pairs for every box (skips its round at 8192) | the same | 6,768,498,576 |
 | Second + X compared against a bound word by word, the X difference only for pairs that pass Y and Z | 2,453,040,784 | 8,022,862,352 |
 | Second + part 1's list shrinks while the 1,000th distance is built | 2,445,577,040 | the same |
@@ -353,16 +249,6 @@ macro  store { sto | a? | (b? >> 6) }
 | `eq` | `0001 0000 0000` | A equals B right now, all 32 bits; no `sub` needed |
 | `neq` | `0000 1000 0000` | A differs from B right now |
 
-### Things that surprise
-
-- **`lia` and `lib` clear the upper half** of their register. Load the upper half (`load rgAH …`) after the lower one, never before.
-- **`lib` is needed for every store**, so storing uses up B: `lib v; store rgA rgB`.
-- **After `and`, `or`, `xor` and `neg` the flags are wrong.** `zero` is 0 even when the result is 0. To test such a result, compare it: `lib 0; jmp eq; …`.
-- **An address above `0x0FFF` cannot be written in an instruction** (`lia`/`lib` take 12 bits). Keep it in a variable and load it.
-- **Naming two registers in one instruction does not do two things.** A load puts the same word in both; a store or push writes the OR of both.
-- **`sum_32`, `sub_32` and the other `_32` symbols** set a bit the CPU ignores. They do the same as the plain ones; every operation is 32 bits wide.
-- **No multiply, divide, right shift or add-with-carry.** Multiply by a power of two with `shf`, by a small constant with repeated `sum`.
-
 ### The idioms every program is built from
 
 `v` is a variable: a `pointer` with an address below `0x1000`.
@@ -418,9 +304,3 @@ macro do     { call; a? }
 | `do L` | call the subroutine L | 2 |
 | `if_zero L`, `if_carry L`, `if_nega L` | jump to L on the flag the last `sum` or `sub` left (`sub` on its own row, then `if_nega L`: A < B) | 2 |
 | `carryB` | B = the upper half of A, the carry of the last `sum` (`psh rgAH; pop rgB`) | 2 |
-
-Rules the game sets:
-- A macro cannot use another macro, so the bodies write `ld | rgA | (rgA >> 6)` where a program row would say `load rgA rgA`.
-- Nothing may follow the closing brace on the definition's line except a comment.
-- A macro of several instructions is a statement of its own: `getA v; sum` is fine, `getA v | 1` is not.
-- A macro costs nothing at run time: it stores the same words as the instructions written out (checked in the engine and in the game on 2026-11-18: the thirteen macros above against the same code by hand, 37 words equal).
